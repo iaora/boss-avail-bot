@@ -24,7 +24,7 @@ def _path(value: str) -> Path:
 
 
 def _roster_contact(raw: str) -> str:
-    """ROSTER_CONTACT as shown to players. A Discord user ID (just the digits) becomes a clickable
+    """ROSTER_CONTACT_ID as shown to players. A Discord user ID (just the digits) becomes a clickable
     mention; a mention already written as <@ID> is kept; anything else is a plain name."""
     value = raw.strip()
     if value.isdigit():
@@ -69,6 +69,7 @@ class Config:
             seed_roster_csv=_path(os.getenv("SEED_ROSTER_CSV", "bot_data/Monkey, Inc.  - CQ Roster.csv")),
             seed_squad_timings=_path(os.getenv("SEED_SQUAD_TIMINGS", "bot_data/squad_timings.txt")),
             class_icons_dir=_path(os.getenv("CLASS_ICONS_DIR", "bot_data/class_icons")),
-            roster_contact=_roster_contact(os.getenv("ROSTER_CONTACT", "")),
+            # ROSTER_CONTACT was the variable's earlier name; still read so older .env files work
+            roster_contact=_roster_contact(os.getenv("ROSTER_CONTACT_ID") or os.getenv("ROSTER_CONTACT", "")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

@@ -189,6 +189,8 @@ def test_former_substitute_players_become_active(tmp_path):
 def test_roster_contact_setting(monkeypatch):
     from bot.config import Config
 
+    monkeypatch.delenv("ROSTER_CONTACT", raising=False)  # isolate from the developer's .env
+
     for raw, shown in [
         ("Robin", "Robin"),                                        # a plain name
         ("123456789012345678", "<@123456789012345678>"),           # just the ID: becomes a mention
@@ -196,5 +198,9 @@ def test_roster_contact_setting(monkeypatch):
         ("<@123456789012345678>", "<@123456789012345678>"),        # already a mention: kept
         ("  ", "a host"),                                          # empty: default
     ]:
-        monkeypatch.setenv("ROSTER_CONTACT", raw)
+        monkeypatch.setenv("ROSTER_CONTACT_ID", raw)
         assert Config.from_env().roster_contact == shown
+    # the variable's earlier name still works when the new one isn't set
+    monkeypatch.delenv("ROSTER_CONTACT_ID")
+    monkeypatch.setenv("ROSTER_CONTACT", "Robin")
+    assert Config.from_env().roster_contact == "Robin"

@@ -45,7 +45,7 @@ Run the tests with `.venv/bin/python -m pytest`.
    server ID (`GUILD_ID`), the host role ID (`HOST_ROLE_ID`), and the player role to ping
    in reminders (`PLAYER_ROLE_ID`). For the ping to notify people, the player role needs
    **Allow anyone to @mention this role** turned on (Server Settings > Roles).
-   Optionally set `ROSTER_CONTACT` to who players should message about new characters: their
+   Optionally set `ROSTER_CONTACT_ID` to who players should message about new characters: their
    **user ID, just the digits** (right-click them > Copy User ID), which shows as a clickable
    @mention, or a plain name. Don't add `<@ >`. It appears in `/cq characters` and defaults
    to "a host".
