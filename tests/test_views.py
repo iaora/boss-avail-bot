@@ -133,3 +133,34 @@ def test_old_reminder_sort_button_still_works(bot):
     [edit] = interaction.response.edits  # the private copy is re-sorted in place
     assert squad_numbers_in(edit["embed"].description) == [1, 14, 4]
     assert get_squad_order(bot.conn, 7) == "time"
+
+
+def test_character_editor_marks_rows_that_differ_from_default(bot):
+    player = db.get_player_by_discord_id(bot.conn, 42)
+    db.set_default_availability(bot.conn, player.id, {1: "Preferred", 14: "Available", 4: "Not Available"})
+    db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
+    alt = db.get_character(bot.conn, "Alt")
+    db.set_character_overrides(bot.conn, alt["id"], {14: "Not Available"})
+
+    initial = {**db.get_default_availability(bot.conn, player.id), **db.get_character_overrides(bot.conn, alt["id"])}
+    editor = AvailabilityEditor(bot, mode="character", player=player, week=WEEK, initial=initial, character=alt)
+
+    def marked():
+        return [int(n) for n in re.findall(r"Squad (\d+)\*\*.*✏️", editor.embed().description)]
+
+    assert marked() == [14]  # the saved override
+    assert "Not Available ✏️ (default 🟡)" in editor.embed().description  # shows what the default is
+    assert "✏️ = differs from your default" in editor.embed().footer.text
+    editor.draft[1] = "Available"  # live: marked as soon as it's picked, before Save
+    assert marked() == [1, 14]
+    editor.draft[14] = "Available"  # back to the default: mark goes away
+    assert marked() == [1]
+
+    response = FakeResponse()
+    asyncio.run(editor._save(SimpleNamespace(response=response)))
+    saved = response.edits[-1]["embed"]
+    assert [int(n) for n in re.findall(r"Squad (\d+)\*\*.*✏️", saved.description)] == [1]
+    assert "Available ✏️ (default 🟢)" in saved.description
+
+    weekly = AvailabilityEditor(bot, mode="weekly", player=player, week=WEEK, initial={1: "Not Available"})
+    assert "✏️" not in weekly.embed().description  # only the character editor marks rows

@@ -21,8 +21,11 @@ class FakeResponse:
         self.messages.append(content)
 
 
+HOST_ID = 555
+
+
 def call(cog, command, **kwargs):
-    interaction = SimpleNamespace(response=FakeResponse())
+    interaction = SimpleNamespace(response=FakeResponse(), user=SimpleNamespace(id=HOST_ID))
     asyncio.run(command.callback(cog, interaction, **kwargs))
     return interaction.response.messages[-1]
 
@@ -42,16 +45,15 @@ def test_players_have_no_roster_editing_commands(tmp_path):
             await bot.load_extension(ext)
         try:
             groups = {name: {c.name for c in bot.tree.get_command(name).commands}
-                      for name in ("host", "config", "player", "character", "cq", "my")}
+                      for name in ("host", "config", "player", "character", "cq")}
             return {c.name for c in bot.tree.get_commands()}, groups
         finally:
             await bot.close()  # stops the reminder loop too
 
     top_level, groups = asyncio.run(load_and_list())
-    # every command lives in a group; players have /cq (availability) and /my (characters)
-    assert top_level == {"host", "config", "player", "character", "cq", "my"}
-    assert groups["cq"] == {"availability"}  # No change / Update a week / Update my default are buttons
-    assert groups["my"] == {"characters"}  # status: button in /my characters; availability: /cq availability
+    # every command lives in a group; players have just /cq availability and /cq characters
+    assert top_level == {"host", "config", "player", "character", "cq"}
+    assert groups["cq"] == {"availability", "characters"}  # everything else is buttons
     assert groups["player"] == {"add", "edit", "link"}
     assert groups["character"] == {"add", "edit", "remove"}
     assert groups["config"] == {"reminders", "damage_logs", "squad_time", "squad_remove"}
@@ -89,9 +91,9 @@ def test_add_player_and_characters(cogs):
 
     call(players, PlayerAdminCog.edit_player, player=str(player.id), name="Renamed")
     assert db.get_player(conn, player.id).name == "Renamed"
-    sub = app_commands.Choice(name="Substitute (as needed)", value="sub")
-    reply = call(players, PlayerAdminCog.edit_player, player=str(player.id), status=sub)
-    assert db.get_player(conn, player.id).status == "sub" and "status **Substitute" in reply
+    inactive = app_commands.Choice(name="Inactive", value="inactive")
+    reply = call(players, PlayerAdminCog.edit_player, player=str(player.id), status=inactive)
+    assert db.get_player(conn, player.id).status == "inactive" and "status **Inactive" in reply
     assert db.get_player(conn, player.id).name == "Renamed"  # name untouched
     active = app_commands.Choice(name="Active", value="active")
     call(players, PlayerAdminCog.edit_player, player=str(player.id), name="Both", status=active)

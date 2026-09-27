@@ -25,8 +25,8 @@ class FakeResponse:
         self.edits.append(kwargs)
 
 
-def interaction(values=None):
-    return SimpleNamespace(data={"values": values or []}, response=FakeResponse())
+def interaction(values=None, user_id=None):
+    return SimpleNamespace(data={"values": values or []}, response=FakeResponse(), user=SimpleNamespace(id=user_id))
 
 
 @pytest.fixture

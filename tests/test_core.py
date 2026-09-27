@@ -85,10 +85,10 @@ def test_reimport_is_idempotent(seeded):
 
 def test_reimport_keeps_status_and_bot_availability(seeded):
     player = some_player(seeded)
-    db.set_player_status(seeded, player.id, "sub")
+    db.set_player_status(seeded, player.id, "inactive")
     db.set_default_availability(seeded, player.id, {1: "Not Available"})
     importer.import_roster(seeded, ROSTER.read_text(encoding="utf-8-sig"))
-    assert db.get_player(seeded, player.id).status == "sub"
+    assert db.get_player(seeded, player.id).status == "inactive"
     assert db.get_default_availability(seeded, player.id) == {1: "Not Available"}
 
 
@@ -166,3 +166,21 @@ def test_local_label_twelve_hour():
     assert label(21, 25, twelve_hour=True) == "Sun 9:25 PM"
     assert label(9, 30, twelve_hour=True) == "Sun 9:30 AM"
     assert label(21, 25) == "Sun 21:25"  # 24-hour stays the default elsewhere
+
+
+def test_former_substitute_players_become_active(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v4.db"
+    raw = sqlite3.connect(path)
+    for version, script in enumerate(db.MIGRATIONS[:4], start=1):
+        raw.executescript(script)
+        raw.execute(f"PRAGMA user_version = {version}")
+    raw.execute("INSERT INTO players (name, status) VALUES ('Old sub', 'sub'), ('Gone', 'inactive')")
+    raw.commit()
+    raw.close()
+    conn = db.connect(path)  # runs migration 5
+    assert {p.name: p.status for p in db.list_players(conn)} == {"Gone": "inactive", "Old sub": "active"}
+    with pytest.raises(ValueError):
+        db.set_player_status(conn, 1, "sub")  # no longer a player status
+    conn.close()

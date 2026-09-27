@@ -13,8 +13,6 @@ enforces the host role on every command regardless of visibility.
 
 from __future__ import annotations
 
-import csv
-import io
 from datetime import date
 
 import discord
@@ -31,6 +29,7 @@ from ..views import (
     availability_lines,
     character_status_label,
     confirmation_text,
+    damage_history_embed,
     get_squad_order,
     order_squads,
     send_reminder,
@@ -45,7 +44,6 @@ WEEK_CHOICES = [
 STATUS_CHOICES = [
     app_commands.Choice(name="Active", value="active"),
     app_commands.Choice(name="Inactive", value="inactive"),
-    app_commands.Choice(name="Substitute (as needed)", value="sub"),
 ]
 BUFF_CHOICES = [app_commands.Choice(name=b, value=b) for b in db.BUFFS]
 CHARACTER_STATUS_CHOICES = [
@@ -53,6 +51,7 @@ CHARACTER_STATUS_CHOICES = [
     app_commands.Choice(name="Sub (only if needed)", value="sub"),
     app_commands.Choice(name="Inactive (don't slot)", value="inactive"),
 ]
+STATUS_CHANGE_DAYS = 7  # how far back /host status lists character status changes
 DAY_CHOICES = [app_commands.Choice(name=d, value=i) for i, d in enumerate(timeutil.WEEKDAYS)]
 
 
@@ -137,37 +136,60 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         wk = self._week(week)
         confirmations = db.get_confirmations(self.bot.conn, wk)
         active = db.list_players(self.bot.conn, ("active",))
-        subs = db.list_players(self.bot.conn, ("sub",))
-
-        confirmed = [p for p in active if p.id in confirmations]
-        no_change = sum(1 for p in confirmed if confirmations[p.id] == "no_change")
-        subs_confirmed = sum(1 for p in subs if p.id in confirmations)
-        # Players who submitted a different schedule for this week (active first, then subs)
-        updated = [p.display for p in active if confirmations.get(p.id) == "updated"] + [
-            f"{p.display} (sub)" for p in subs if confirmations.get(p.id) == "updated"
-        ]
+        no_change = sum(1 for p in active if confirmations.get(p.id) == "no_change")
+        # Players who submitted a different schedule for this week
+        updated = [p.display for p in active if confirmations.get(p.id) == "updated"]
+        waiting = len(active) - no_change - len(updated)
 
         embed = discord.Embed(
             title=f"Availability status: {timeutil.week_label(wk)}",
             description=(
-                f"**{len(confirmed)} / {len(active)}** active players have confirmed\n"
-                f"✅ No change: {no_change} · ✏️ Updated: {len(confirmed) - no_change}\n"
-                f"Substitutes confirmed: {subs_confirmed} / {len(subs)}"
+                f"**{no_change + len(updated)} / {len(active)}** active players have confirmed\n"
+                f"• ✅ No change: {no_change}\n"
+                f"• ✏️ Updated: {len(updated)}\n"
+                f"• ⏳ Not confirmed yet: {waiting}"
             ),
             color=EMBED_COLOR,
         )
-        chunks = _chunks(updated) or ["*No one has submitted a schedule change yet.*"]
+        chunks = _chunks([f"• {name}" for name in updated]) or ["*No one has submitted a schedule change yet.*"]
         for i, chunk in enumerate(chunks[:5]):
             embed.add_field(name="✏️ Submitted a schedule change" if i == 0 else "\u200b", value=chunk, inline=False)
+
+        # Character status changes (static / sub / inactive) in the last STATUS_CHANGE_DAYS days
+        since = int(timeutil.now_utc().timestamp()) - STATUS_CHANGE_DAYS * 86400
+        status_lines = [
+            f"• **{c['player']}**: {c['ign']} ({c['job'] or '?'}) "
+            f"{character_status_label(c['before'])} → {character_status_label(c['after'])}"
+            + (" *(by host)*" if c["by_host"] else "")
+            for c in db.status_changes_since(self.bot.conn, since)
+        ]
+        chunks = _chunks(status_lines) or ["*No character status changes.*"]
+        for i, chunk in enumerate(chunks[:5]):
+            name = f"🔄 Character status changes (last {STATUS_CHANGE_DAYS} days)" if i == 0 else "\u200b"
+            embed.add_field(name=name, value=chunk, inline=False)
+
         if updated:
             embed.set_footer(text="Use /host availability player:<name> to see someone's changed schedule")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        view = discord.ui.View(timeout=900)
+        button = discord.ui.Button(label="Open availability", emoji="📋", style=discord.ButtonStyle.primary)
+
+        async def open_availability(button_interaction: discord.Interaction) -> None:
+            # buttons skip the slash-command host check, so check here too
+            if not self.bot.is_host(button_interaction):
+                await button_interaction.response.send_message("Only hosts can use this.", ephemeral=True)
+                return
+            await self._all_availability(button_interaction, wk)  # same view as /host availability
+
+        button.callback = open_availability
+        view.add_item(button)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(
         name="availability",
         description="Everyone's availability for a week, or one player's (weekly update, else their default)",
     )
-    @app_commands.describe(player="Leave empty for all active players", include_subs="Also include substitutes")
+    @app_commands.describe(player="Leave empty for all active players")
     @app_commands.choices(week=WEEK_CHOICES)
     @app_commands.autocomplete(player=player_autocomplete)
     async def availability(
@@ -175,7 +197,6 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         interaction: discord.Interaction,
         player: str | None = None,
         week: app_commands.Choice[str] | None = None,
-        include_subs: bool = False,
     ):
         wk = self._week(week)
         if player:
@@ -183,7 +204,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
                 view = OrderToggleView(lambda order: self._player_embed(p, wk, order), self.bot.conn, interaction.user.id)
                 await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
             return
-        await self._all_availability(interaction, wk, include_subs)
+        await self._all_availability(interaction, wk)
 
     def _player_embed(self, player: db.Player, wk: date, order: str = "time") -> discord.Embed:
         conn = self.bot.conn
@@ -213,32 +234,18 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             embed.add_field(name="Characters" if i == 0 else "​", value=chunk, inline=False)
         return embed
 
-    async def _all_availability(self, interaction: discord.Interaction, wk: date, include_subs: bool) -> None:
+    async def _all_availability(self, interaction: discord.Interaction, wk: date) -> None:
         conn = self.bot.conn
-        statuses = ("active", "sub") if include_subs else ("active",)
-        players = db.list_players(conn, statuses)
+        players = db.list_players(conn, ("active",))
         squads = db.squads_for_week(conn, wk, self.bot.tz)
         confirmations = db.get_confirmations(conn, wk)
 
         counts = {s.number: {lvl: 0 for lvl in db.LEVELS} for s in squads}
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(
-            ["Player", "Discord", "Status", "Source", "Confirmed"]
-            + [
-                f"Squad {s.number} ({timeutil.local_label(s.starts_at, self.bot.tz)})"
-                for s in sorted(squads, key=lambda s: s.number)
-            ]
-        )
         for p in players:
-            avail, source = db.effective_week_availability(conn, p.id, wk)
+            avail, _ = db.effective_week_availability(conn, p.id, wk)
             for n, lvl in avail.items():
                 if n in counts:
                     counts[n][lvl] += 1
-            writer.writerow(
-                [p.name, p.discord_handle or p.discord_id or "", p.status, source, confirmations.get(p.id, "no")]
-                + [avail.get(s.number, "") for s in sorted(squads, key=lambda s: s.number)]
-            )
 
         def overview(order: str) -> discord.Embed:
             lines = [
@@ -250,7 +257,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             embed = discord.Embed(
                 title=f"Availability: {timeutil.week_label(wk)}",
                 description=(
-                    f"{len(players)} {'active + sub' if include_subs else 'active'} players · "
+                    f"{len(players)} active players · "
                     f"{sum(1 for p in players if p.id in confirmations)} confirmed. "
                     "Players without a weekly update use their default.\n\n" + "\n".join(lines)
                 ),
@@ -258,13 +265,12 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             )
             embed.set_footer(
                 text="Use the buttons for who's 🟢 Preferred / 🟡 Available per squad, or pick a squad for their "
-                "characters · Full player-by-squad grid attached as CSV"
+                "characters"
             )
             return embed
 
-        file = discord.File(io.BytesIO(buf.getvalue().encode("utf-8-sig")), filename=f"availability_{wk.isoformat()}.csv")
         view = SquadBreakdownView(self.bot, wk, players, overview, interaction.user.id)
-        await interaction.response.send_message(embed=view.current_embed(), file=file, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=view.current_embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="import", description="Upload the roster CSV to refresh characters, squads and slots")
     @app_commands.describe(file="CSV export of the CQ Roster sheet")
@@ -316,27 +322,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         if char is None:
             await interaction.response.send_message(f"No character named **{character}**.", ephemeral=True)
             return
-        runs = conn.execute(
-            """
-            SELECT l.started_at, l.finished_at, r.damage, r.normalized FROM damage_runs r
-            JOIN damage_logs l ON l.id = r.log_id WHERE r.character_id = ? ORDER BY l.started_at DESC LIMIT 15
-            """,
-            (char["id"],),
-        ).fetchall()
-        averaged = damage.average_runs(conn)
-        lines = [
-            f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'], 'd')} · "
-            f"{r['damage'] / 1e9:.2f}B in {(r['finished_at'] - r['started_at']) / 60:.1f} min → **{r['normalized']:.2f}**"
-            for i, r in enumerate(runs)
-        ]
-        dmg = f"{char['dmg']:.2f}" if char["dmg"] is not None else "not set"
-        embed = discord.Embed(
-            title=f"{char['ign']} ({char['job'] or '?'}): damage {dmg}",
-            description="\n".join(lines) or "*No runs recorded yet. The damage comes from the roster sheet.*",
-            color=EMBED_COLOR,
-        )
-        embed.set_footer(text=f"★ = counted in the average (last {averaged} runs) · scaled to {damage.NORMALIZE_MINUTES:g} min")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=damage_history_embed(conn, char), ephemeral=True)
 
     @app_commands.command(name="remind_now", description="Post next week's availability reminder right now")
     async def remind_now(self, interaction: discord.Interaction):
@@ -567,7 +553,7 @@ class PlayerAdminCog(HostOnly, commands.GroupCog, group_name="player", group_des
         )
 
     @app_commands.command(name="edit", description="Rename a player or change their status")
-    @app_commands.describe(name="New name", status="Active, inactive or substitute")
+    @app_commands.describe(name="New name", status="Active or inactive")
     @app_commands.choices(status=STATUS_CHOICES)
     @app_commands.autocomplete(player=player_autocomplete)
     async def edit_player(
@@ -608,7 +594,7 @@ class CharacterAdminCog(HostOnly, commands.GroupCog, group_name="character", gro
     @app_commands.command(name="add", description="Add a character to a player")
     @app_commands.describe(
         ign="In-game name", job="Job, e.g. BSP, NL, DRK", buff="Role in the squad", dmg="Damage",
-        status="Static (default), sub or inactive. Players can change it in /my characters",
+        status="Static (default), sub or inactive. Players can change it in /cq characters",
     )
     @app_commands.choices(buff=BUFF_CHOICES, status=CHARACTER_STATUS_CHOICES)
     @app_commands.autocomplete(player=player_autocomplete, job=job_autocomplete)
@@ -669,6 +655,7 @@ class CharacterAdminCog(HostOnly, commands.GroupCog, group_name="character", gro
         db.update_character(
             self.bot.conn,
             char["id"],
+            changed_by=interaction.user.id,
             job=job.upper() if job else None,
             buff=buff.value if buff else None,
             dmg=dmg,

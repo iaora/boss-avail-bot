@@ -71,7 +71,7 @@ def build_breakdown(
 
 
 def _player_name(entry: Entry) -> str:
-    return entry.player.name + (" (sub)" if entry.player.status == "sub" else "")
+    return entry.player.name
 
 
 INDENT = "\u2003"  # em space: Discord strips ordinary leading spaces
@@ -348,7 +348,7 @@ class SquadBreakdownView(discord.ui.View):
             ts = timeutil.discord_ts(s.starts_at, "f")
             value = ts + "\n" + (_fit(names, per_field - len(ts) - 1) if names else "*No one*")
             embed.add_field(name=f"Squad {s.number} ({len(entries)})", value=value, inline=False)
-        embed.set_footer(text="⏳ only sub characters available · (sub) = substitute player")
+        embed.set_footer(text="⏳ only sub characters available")
         return embed
 
     def detail_pages(self, number: int, level: str) -> list[list[str]]:

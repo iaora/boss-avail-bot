@@ -22,7 +22,7 @@ from . import timeutil
 LEVELS = ("Preferred", "Available", "Not Available")
 # How a player wants each character used when hosts slot squads
 CHARACTER_STATUSES = ("static", "sub", "inactive")
-PLAYER_STATUSES = ("active", "inactive", "sub")
+PLAYER_STATUSES = ("active", "inactive")  # "sub" existed before migration 5; see MIGRATIONS
 BUFFS = ("DPS", "HASTE", "SE", "HSH", "SI/TL", "SI", "THORNS", "HB")
 
 MIGRATIONS: list[str] = [
@@ -132,6 +132,23 @@ MIGRATIONS: list[str] = [
     ALTER TABLE characters ADD COLUMN status TEXT NOT NULL DEFAULT 'static'
         CHECK (status IN ('static', 'sub', 'inactive'));
     UPDATE characters SET status = CASE WHEN perm = 1 THEN 'static' ELSE 'sub' END;
+    """,
+    # 4: log of character status changes, shown to hosts in /host status
+    """
+    CREATE TABLE character_status_log (
+        id           INTEGER PRIMARY KEY,
+        character_id INTEGER NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
+        old_status   TEXT NOT NULL,
+        new_status   TEXT NOT NULL,
+        changed_at   INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        changed_by   INTEGER  -- Discord user id of whoever made the change
+    );
+    CREATE INDEX idx_character_status_log_time ON character_status_log (changed_at);
+    """,
+    # 5: players are only active or inactive now (the "sub" player status was dropped; characters
+    # still have their own static/sub/inactive status). Former substitutes become active.
+    """
+    UPDATE players SET status = 'active' WHERE status = 'sub';
     """,
 ]
 
@@ -299,22 +316,70 @@ def add_character(
         )
 
 
-def set_character_statuses(conn: sqlite3.Connection, player_id: int, statuses: dict[int, str]) -> None:
-    """Set static/sub/inactive for several of a player's characters ({character id: status})."""
+def set_character_statuses(
+    conn: sqlite3.Connection, player_id: int, statuses: dict[int, str], changed_by: int | None = None
+) -> None:
+    """Set static/sub/inactive for several of a player's characters ({character id: status}).
+
+    Every actual change is logged (see status_changes_since)."""
     if any(s not in CHARACTER_STATUSES for s in statuses.values()):
         raise ValueError(statuses)
     with conn:
-        conn.executemany(
-            "UPDATE characters SET status = ? WHERE id = ? AND player_id = ?",
-            [(status, cid, player_id) for cid, status in statuses.items()],
+        for cid, status in statuses.items():
+            row = conn.execute(
+                "SELECT status FROM characters WHERE id = ? AND player_id = ?", (cid, player_id)
+            ).fetchone()
+            if row is not None and row["status"] != status:
+                _log_status_change(conn, cid, row["status"], status, changed_by)
+                conn.execute("UPDATE characters SET status = ? WHERE id = ?", (status, cid))
+
+
+def _log_status_change(conn: sqlite3.Connection, character_id: int, old: str, new: str, changed_by: int | None) -> None:
+    conn.execute(
+        "INSERT INTO character_status_log (character_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)",
+        (character_id, old, new, changed_by),
+    )
+
+
+def status_changes_since(conn: sqlite3.Connection, since: int) -> list[dict]:
+    """Characters whose status changed since `since` (unix seconds): one entry each, with the
+    status before the first change and after the last. Characters that ended where they started
+    are left out. Sorted by player name, then character name."""
+    rows = conn.execute(
+        """
+        SELECT l.character_id, l.old_status, l.new_status, l.changed_at, l.changed_by,
+               c.ign, c.job, p.name AS player_name, p.discord_id AS owner_id
+        FROM character_status_log l
+        JOIN characters c ON c.id = l.character_id
+        JOIN players p ON p.id = c.player_id
+        WHERE l.changed_at >= ?
+        ORDER BY l.changed_at, l.id
+        """,
+        (since,),
+    ).fetchall()
+    changes: dict[int, dict] = {}
+    for r in rows:
+        entry = changes.setdefault(
+            r["character_id"],
+            {"ign": r["ign"], "job": r["job"], "player": r["player_name"], "before": r["old_status"], "by_host": False},
         )
+        entry["after"] = r["new_status"]
+        entry["changed_at"] = r["changed_at"]
+        entry["by_host"] |= r["changed_by"] is not None and r["changed_by"] != r["owner_id"]
+    result = [c for c in changes.values() if c["before"] != c["after"]]
+    return sorted(result, key=lambda c: (c["player"].lower(), c["ign"].lower()))
 
 
-def update_character(conn: sqlite3.Connection, character_id: int, **fields) -> None:
+def update_character(conn: sqlite3.Connection, character_id: int, changed_by: int | None = None, **fields) -> None:
     allowed = {"job", "buff", "dmg", "status", "player_id"}
     fields = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not fields:
         return
+    if "status" in fields:
+        row = conn.execute("SELECT status FROM characters WHERE id = ?", (character_id,)).fetchone()
+        if row is not None and row["status"] != fields["status"]:
+            with conn:
+                _log_status_change(conn, character_id, row["status"], fields["status"], changed_by)
     sets = ", ".join(f"{k} = ?" for k in fields if k != "dmg")
     params = [v for k, v in fields.items() if k != "dmg"]
     if "dmg" in fields:

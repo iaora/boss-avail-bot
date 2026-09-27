@@ -6,6 +6,7 @@ import re
 from datetime import date
 from types import SimpleNamespace
 
+import discord
 import pytest
 
 from bot import db
@@ -204,3 +205,66 @@ def test_character_availability_button_and_picker(setup):
     editor = pick.response.edited["view"]
     assert isinstance(editor, AvailabilityEditor) and editor.mode == "character"
     assert editor.character["ign"] == "Alt" and editor.draft[2] == "Preferred"  # starts from default + override
+
+
+def test_cq_characters_has_character_availability_button(setup):
+    from bot.cogs.player import CqCog
+    from bot.views import CharacterPicker, ReminderButton
+
+    bot, player = setup
+    db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
+
+    class Response:
+        async def send_message(self, **kwargs):
+            self.sent = kwargs
+
+    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
+    asyncio.run(CqCog.characters.callback(CqCog(bot), interaction))
+    labels = [c["label"] for row in interaction.response.sent["view"].to_components() for c in row["components"]]
+    assert labels == ["Set character status", "Character availability", "Damage history"]
+
+    button = next(c for c in interaction.response.sent["view"].children if isinstance(c, ReminderButton))
+    click = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
+    asyncio.run(button.callback(click))
+    assert isinstance(click.response.sent["view"], CharacterPicker)
+
+
+def test_cq_characters_damage_history_button(setup):
+    from bot import damage
+    from bot.cogs.player import CqCog
+    from bot.views import DamageHistoryPicker
+
+    bot, player = setup
+    db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
+    log = damage.parse_log(
+        "[Start Time] 27-09-2026 01:00:00\n[Finish Time] 27-09-2026 01:27:30\n>>Main: 5,000,000,000\n",
+        bot.config.log_timezone,
+    )
+    damage.record_log(bot.conn, log, message_id=1)
+
+    class Response:
+        async def send_message(self, **kwargs):
+            self.sent = kwargs
+
+        async def edit_message(self, **kwargs):
+            self.edited = kwargs
+
+    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
+    asyncio.run(CqCog.characters.callback(CqCog(bot), interaction))
+    history_button = next(
+        c for c in interaction.response.sent["view"].children
+        if isinstance(c, discord.ui.Button) and c.label == "Damage history"
+    )
+    click = SimpleNamespace(response=Response())
+    asyncio.run(history_button.callback(click))
+    picker = click.response.sent["view"]
+    assert isinstance(picker, DamageHistoryPicker)
+    assert [o.label for o in picker.children[0].options] == ["Main (NL)"]  # only your own characters
+
+    main = db.get_character(bot.conn, "Main")
+    pick = SimpleNamespace(data={"values": [str(main["id"])]}, response=Response())
+    asyncio.run(picker._pick(pick))
+    embed = pick.response.edited["embed"]
+    assert embed.title == "Main (NL): damage 5.00"
+    assert "5.00B in 27.5 min → **5.00**" in embed.description and embed.description.startswith("★")
+    assert pick.response.edited["view"].children[0].options[0].default  # dropdown stays, to switch characters
