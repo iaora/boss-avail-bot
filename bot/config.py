@@ -23,6 +23,15 @@ def _path(value: str) -> Path:
     return p if p.is_absolute() else PROJECT_ROOT / p
 
 
+def _roster_contact(raw: str) -> str:
+    """ROSTER_CONTACT as shown to players. A Discord user ID (just the digits) becomes a clickable
+    mention; a mention already written as <@ID> is kept; anything else is a plain name."""
+    value = raw.strip()
+    if value.isdigit():
+        return f"<@{value}>"
+    return value or "a host"
+
+
 def _optional_int(name: str) -> int | None:
     raw = os.getenv(name, "").strip()
     return int(raw) if raw else None
@@ -42,7 +51,7 @@ class Config:
     seed_roster_csv: Path
     seed_squad_timings: Path
     class_icons_dir: Path
-    roster_contact: str  # who players message to add characters: a name or a <@id> mention
+    roster_contact: str  # who players message to add characters, ready to display (see _roster_contact)
     log_level: str
 
     @classmethod
@@ -60,6 +69,6 @@ class Config:
             seed_roster_csv=_path(os.getenv("SEED_ROSTER_CSV", "bot_data/Monkey, Inc.  - CQ Roster.csv")),
             seed_squad_timings=_path(os.getenv("SEED_SQUAD_TIMINGS", "bot_data/squad_timings.txt")),
             class_icons_dir=_path(os.getenv("CLASS_ICONS_DIR", "bot_data/class_icons")),
-            roster_contact=os.getenv("ROSTER_CONTACT", "").strip() or "a host",
+            roster_contact=_roster_contact(os.getenv("ROSTER_CONTACT", "")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

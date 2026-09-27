@@ -45,8 +45,10 @@ Run the tests with `.venv/bin/python -m pytest`.
    server ID (`GUILD_ID`), the host role ID (`HOST_ROLE_ID`), and the player role to ping
    in reminders (`PLAYER_ROLE_ID`). For the ping to notify people, the player role needs
    **Allow anyone to @mention this role** turned on (Server Settings > Roles).
-   Optionally set `ROSTER_CONTACT` to who players should message about new characters (a name,
-   or a mention like `<@123…>`). It appears in `/cq characters` and defaults to "a host".
+   Optionally set `ROSTER_CONTACT` to who players should message about new characters: their
+   **user ID, just the digits** (right-click them > Copy User ID), which shows as a clickable
+   @mention, or a plain name. Don't add `<@ >`. It appears in `/cq characters` and defaults
+   to "a host".
 5. Show the host commands to hosts. `/host`, `/config`, `/player` and `/character` are
    hidden from everyone without Manage Server. Go to Server Settings > Integrations >
    Monkey Inc. > Manage, click each of the four, and allow the host role (see
