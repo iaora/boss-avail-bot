@@ -381,7 +381,7 @@ class ConfigCog(HostOnly, commands.GroupCog, group_name="config", group_descript
             return
         for key, value in updates.items():
             if value is not None:
-                db.set_setting(conn, key, value)
+                db.set_boss_setting(conn, key, value)
         if remind_days or remind_time:
             # A new schedule only affects future reminders; don't post one whose new time already passed.
             mark_latest_due_as_sent(self.bot)
@@ -413,13 +413,13 @@ class ConfigCog(HostOnly, commands.GroupCog, group_name="config", group_descript
     ):
         conn = self.bot.conn
         if channel:
-            db.set_setting(conn, "queen_logs_channel_id", str(channel.id))
+            db.set_boss_setting(conn, "queen_logs_channel_id", str(channel.id))
         if average_runs:
-            db.set_setting(conn, "damage_average_runs", str(average_runs))
+            db.set_boss_setting(conn, "damage_average_runs", str(average_runs))
             damage.recompute_all(conn)
         channel_id = logs_channel_id(self.bot)
         runs = damage.average_runs(conn)
-        logs = conn.execute("SELECT COUNT(*) FROM damage_logs").fetchone()[0]
+        logs = conn.execute("SELECT COUNT(*) FROM damage_logs WHERE boss_id = ?", (db.CQ,)).fetchone()[0]
         embed = discord.Embed(
             title="Damage log settings",
             description=(

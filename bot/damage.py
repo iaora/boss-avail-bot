@@ -67,8 +67,8 @@ def normalized(damage: int, minutes: float) -> float:
     return round(damage / 1e9 * NORMALIZE_MINUTES / minutes, 3)
 
 
-def average_runs(conn: sqlite3.Connection) -> int:
-    return int(db.get_setting(conn, "damage_average_runs", str(DEFAULT_AVERAGE_RUNS)))
+def average_runs(conn: sqlite3.Connection, *, boss_id: int = db.CQ) -> int:
+    return int(db.get_boss_setting(conn, "damage_average_runs", str(DEFAULT_AVERAGE_RUNS), boss_id=boss_id))
 
 
 def record_log(
@@ -78,8 +78,9 @@ def record_log(
     message_id: int | None = None,
     filename: str | None = None,
     uploaded_by: int | None = None,
+    boss_id: int = db.CQ,
 ) -> RecordResult:
-    """Save a run and update damage for every character in it.
+    """Save a run for `boss_id` and update that boss's damage for every character in it.
 
     Uploading the same run again (same start and finish time) only adds characters that
     weren't saved the first time, e.g. names that have since been added to the roster.
@@ -88,7 +89,7 @@ def record_log(
     result = RecordResult(log)
     start, finish = int(log.started_at.timestamp()), int(log.finished_at.timestamp())
     existing = conn.execute(
-        "SELECT id FROM damage_logs WHERE started_at = ? AND finished_at = ?", (start, finish)
+        "SELECT id FROM damage_logs WHERE boss_id = ? AND started_at = ? AND finished_at = ?", (boss_id, start, finish)
     ).fetchone()
 
     with conn:
@@ -96,13 +97,13 @@ def record_log(
             log_id = existing["id"]
         else:
             log_id = conn.execute(
-                "INSERT INTO damage_logs (message_id, filename, started_at, finished_at, uploaded_by) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (message_id, filename, start, finish, uploaded_by),
+                "INSERT INTO damage_logs (boss_id, message_id, filename, started_at, finished_at, uploaded_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (boss_id, message_id, filename, start, finish, uploaded_by),
             ).lastrowid
         new_character_ids = []
         for name, total in log.damage.items():
-            character = db.get_character(conn, name)
+            character = db.get_character(conn, name, boss_id=boss_id)
             if character is None:
                 result.unknown.append(name)
                 continue
@@ -114,12 +115,14 @@ def record_log(
                 new_character_ids.append((character["id"], character["ign"], normalized(total, log.minutes)))
 
     result.duplicate = existing is not None and not new_character_ids
-    result.updated = [(ign, run, recompute_character_damage(conn, cid)) for cid, ign, run in new_character_ids]
+    result.updated = [
+        (ign, run, recompute_character_damage(conn, cid, boss_id=boss_id)) for cid, ign, run in new_character_ids
+    ]
     return result
 
 
-def recompute_character_damage(conn: sqlite3.Connection, character_id: int) -> float | None:
-    """Set the character's dmg to the average of their latest N runs.
+def recompute_character_damage(conn: sqlite3.Connection, character_id: int, *, boss_id: int = db.CQ) -> float | None:
+    """Set the character's dmg for `boss_id` to the average of their latest N runs for that boss.
 
     With no runs left (e.g. their only log was deleted), dmg falls back to base_dmg, the value
     from the roster sheet or entered by a host.
@@ -127,17 +130,24 @@ def recompute_character_damage(conn: sqlite3.Connection, character_id: int) -> f
     rows = conn.execute(
         """
         SELECT r.normalized FROM damage_runs r JOIN damage_logs l ON l.id = r.log_id
-        WHERE r.character_id = ? ORDER BY l.started_at DESC LIMIT ?
+        WHERE r.character_id = ? AND l.boss_id = ? ORDER BY l.started_at DESC LIMIT ?
         """,
-        (character_id, average_runs(conn)),
+        (character_id, boss_id, average_runs(conn, boss_id=boss_id)),
     ).fetchall()
-    if not rows:
-        with conn:
-            conn.execute("UPDATE characters SET dmg = base_dmg WHERE id = ?", (character_id,))
-        return None
-    value = round(sum(r["normalized"] for r in rows) / len(rows), 3)
     with conn:
-        conn.execute("UPDATE characters SET dmg = ? WHERE id = ?", (value, character_id))
+        conn.execute(
+            "INSERT OR IGNORE INTO character_boss (character_id, boss_id) VALUES (?, ?)", (character_id, boss_id)
+        )
+        if not rows:
+            conn.execute(
+                "UPDATE character_boss SET dmg = base_dmg WHERE character_id = ? AND boss_id = ?",
+                (character_id, boss_id),
+            )
+            return None
+        value = round(sum(r["normalized"] for r in rows) / len(rows), 3)
+        conn.execute(
+            "UPDATE character_boss SET dmg = ? WHERE character_id = ? AND boss_id = ?", (value, character_id, boss_id)
+        )
     return value
 
 
@@ -151,17 +161,22 @@ def delete_logs_for_message(conn: sqlite3.Connection, message_id: int) -> list[s
         return None
     marks = ",".join("?" * len(logs))
     affected = conn.execute(
-        f"SELECT DISTINCT c.id, c.ign FROM damage_runs r JOIN characters c ON c.id = r.character_id "
+        f"SELECT DISTINCT c.id, c.ign, l.boss_id FROM damage_runs r "
+        f"JOIN characters c ON c.id = r.character_id JOIN damage_logs l ON l.id = r.log_id "
         f"WHERE r.log_id IN ({marks})",
         logs,
     ).fetchall()
     with conn:
         conn.execute(f"DELETE FROM damage_logs WHERE id IN ({marks})", logs)
     for row in affected:
-        recompute_character_damage(conn, row["id"])
-    return [row["ign"] for row in affected]
+        recompute_character_damage(conn, row["id"], boss_id=row["boss_id"])
+    return list(dict.fromkeys(row["ign"] for row in affected))
 
 
-def recompute_all(conn: sqlite3.Connection) -> None:
-    for row in conn.execute("SELECT DISTINCT character_id FROM damage_runs").fetchall():
-        recompute_character_damage(conn, row["character_id"])
+def recompute_all(conn: sqlite3.Connection, *, boss_id: int = db.CQ) -> None:
+    rows = conn.execute(
+        "SELECT DISTINCT r.character_id FROM damage_runs r JOIN damage_logs l ON l.id = r.log_id WHERE l.boss_id = ?",
+        (boss_id,),
+    ).fetchall()
+    for row in rows:
+        recompute_character_damage(conn, row["character_id"], boss_id=boss_id)
