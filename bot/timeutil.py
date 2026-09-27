@@ -70,7 +70,7 @@ def discord_ts(dt: datetime | int, style: str = "F") -> str:
 
 def local_label(unix: int, tz: ZoneInfo, with_zone: bool = False, twelve_hour: bool = False) -> str:
     """e.g. 'Sun 12:00', 'Sun 12:00 EDT', or with twelve_hour 'Sun 12:00 PM EDT', in the given
-    timezone -- for host-facing text and CSV exports."""
+    timezone -- for host-facing text."""
     local = datetime.fromtimestamp(unix, timezone.utc).astimezone(tz)
     if twelve_hour:
         # built by hand: strftime's no-leading-zero hour (%-I) isn't available on every platform

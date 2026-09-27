@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from . import db, reminders, timeutil
+from . import damage, db, reminders, timeutil
 
 if TYPE_CHECKING:
     from .app import MonkeyBot
@@ -217,7 +217,6 @@ def reminder_message(bot: "MonkeyBot", week_start: date) -> tuple[discord.Embed,
     wk = week_start.isoformat()
     for action in ("view", "nochange", "update"):
         view.add_item(ReminderButton(action, wk))
-    view.add_item(SquadTimesButton("number", wk))  # shows a private copy sorted by squad number
     return embed, view
 
 
@@ -379,9 +378,11 @@ class SquadTimesButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"avail-times:(?P<order>time|number):(?P<week>\d{4}-\d{2}-\d{2})",
 ):
-    """On the reminder (shared by everyone): show the squad times privately in `order`.
+    """Show the squad times privately in `order`.
 
-    Pressed on the reminder it sends a private copy; pressed on that copy it re-sorts it."""
+    No longer added to new reminders (players sort via "View my availability" instead); kept so the
+    button on reminders posted before that change still works. Pressed on the reminder it sends a
+    private copy; pressed on that copy it re-sorts it."""
 
     def __init__(self, order: str, week: str):
         super().__init__(
@@ -619,6 +620,8 @@ class AvailabilityEditor(discord.ui.View):
         self.order = get_squad_order(bot.conn, player.discord_id)
         self.squads = order_squads(db.squads_for_week(bot.conn, week, bot.tz), self.order)
         self.draft: db.Availability = {s.number: initial[s.number] for s in self.squads if s.number in initial}
+        # character mode: the player's default, to mark squads where this character differs (✏️)
+        self.default = db.get_default_availability(bot.conn, player.id) if mode == "character" else {}
         self.page = 0
         self._rebuild()
 
@@ -637,20 +640,32 @@ class AvailabilityEditor(discord.ui.View):
             return "Your default availability"
         return f"Availability for {self.character['ign']} (overrides your default)"
 
-    def embed(self) -> discord.Embed:
-        on_page = {s.number for s in self.page_squads()}
+    def _differs(self, squad: int, level: str | None) -> bool:
+        """Character mode: this squad's level differs from the player's default (unset saves as Not Available)."""
+        return self.mode == "character" and (level or "Not Available") != self.default.get(squad)
+
+    def _lines(self, levels: db.Availability, on_page: set[int] = frozenset()) -> str:
         lines = []
         for s in self.squads:
-            level = self.draft.get(s.number)
+            level = levels.get(s.number)
             marker = "▶ " if s.number in on_page else ""
+            changed = ""
+            if self._differs(s.number, level):
+                default = self.default.get(s.number)
+                changed = f" ✏️ (default {LEVEL_EMOJI.get(default, UNSET_EMOJI)})"
             lines.append(
                 f"{marker}{LEVEL_EMOJI.get(level, UNSET_EMOJI)} **Squad {s.number}** · "
-                f"{timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}"
+                f"{timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}{changed}"
             )
-        embed = discord.Embed(title=self.title(), description="\n".join(lines), color=EMBED_COLOR)
+        return "\n".join(lines)
+
+    def embed(self) -> discord.Embed:
+        on_page = {s.number for s in self.page_squads()}
+        embed = discord.Embed(title=self.title(), description=self._lines(self.draft, on_page), color=EMBED_COLOR)
+        legend = " ✏️ = differs from your default (shown in brackets) ·" if self.mode == "character" else ""
         embed.set_footer(
             text=f"Page {self.page + 1}/{self.page_count} · Sorted by "
-            f"{'time' if self.order == 'time' else 'squad number'} · Pick a level for each squad, use ◀ ▶ to "
+            f"{'time' if self.order == 'time' else 'squad number'} ·{legend} Pick a level for each squad, use ◀ ▶ to "
             "change page, then press Save. Squads left unset are saved as Not Available."
         )
         return embed
@@ -730,11 +745,9 @@ class AvailabilityEditor(discord.ui.View):
                 else f"✅ {self.character['ign']} now follows your default schedule."
             )
         self.stop()
-        embed = discord.Embed(
-            title=self.title(),
-            description=availability_lines(self.squads, full),
-            color=EMBED_COLOR,
-        )
+        embed = discord.Embed(title=self.title(), description=self._lines(full), color=EMBED_COLOR)
+        if self.mode == "character":
+            embed.set_footer(text="✏️ = differs from your default (shown in brackets)")
         await interaction.response.edit_message(content=message, embed=embed, view=None)
 
 
@@ -742,9 +755,11 @@ class AvailabilityEditor(discord.ui.View):
 
 CHARACTER_STATUS_INFO = {
     "static": ("⭐", "Static", "Prioritize this character when slotting"),
-    "sub": ("⏳", "Sub", "Only slot if needed"),
+    "sub": ("⏳", "Flex", "Only slot if needed"),  # stored as "sub"; shown as Flex
     "inactive": ("💤", "Inactive", "Don't slot this character"),
 }
+# Players choose between these; only a host can mark a character inactive (/character edit).
+PLAYER_CHARACTER_STATUSES = ("static", "sub")
 
 
 def character_status_label(status: str) -> str:
@@ -758,7 +773,9 @@ def character_line(c) -> str:
 
 
 class CharacterStatusEditor(discord.ui.View):
-    """Paged editor: one static/sub/inactive dropdown per character, saved on Save."""
+    """Paged editor: one static/sub dropdown per character, saved on Save.
+
+    Characters a host marked inactive are listed but locked; only a host can change them."""
 
     PAGE_SIZE = 4
 
@@ -767,29 +784,34 @@ class CharacterStatusEditor(discord.ui.View):
         self.bot = bot
         self.player = player
         self.characters = db.list_characters(bot.conn, player.id)
-        self.draft = {c["id"]: c["status"] for c in self.characters}
+        self.editable = [c for c in self.characters if c["status"] in PLAYER_CHARACTER_STATUSES]
+        self.draft = {c["id"]: c["status"] for c in self.editable}
         self.page = 0
         self._rebuild()
 
     @property
     def page_count(self) -> int:
-        return max(1, math.ceil(len(self.characters) / self.PAGE_SIZE))
+        return max(1, math.ceil(len(self.editable) / self.PAGE_SIZE))
 
     def page_characters(self):
         start = self.page * self.PAGE_SIZE
-        return self.characters[start : start + self.PAGE_SIZE]
+        return self.editable[start : start + self.PAGE_SIZE]
 
     def embed(self) -> discord.Embed:
         on_page = {c["id"] for c in self.page_characters()}
-        lines = [
-            f"{'▶ ' if c['id'] in on_page else ''}{CHARACTER_STATUS_INFO[self.draft[c['id']]][0]} "
-            f"**{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · {CHARACTER_STATUS_INFO[self.draft[c['id']]][1]}"
-            for c in self.characters
-        ]
+        lines = []
+        for c in self.characters:
+            if c["id"] in self.draft:
+                emoji, name, _ = CHARACTER_STATUS_INFO[self.draft[c["id"]]]
+                marker = "▶ " if c["id"] in on_page else ""
+                lines.append(f"{marker}{emoji} **{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · {name}")
+            else:  # inactive: set by a host, not changeable here
+                lines.append(f"💤 **{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · Inactive (set by a host)")
         embed = discord.Embed(
             title="Your character status",
             description="Tell the hosts which characters to slot:\n"
-            "⭐ **Static**: prioritize · ⏳ **Sub**: only if needed · 💤 **Inactive**: don't slot\n\n"
+            "⭐ **Static**: prioritize · ⏳ **Flex**: only if needed\n"
+            "💤 **Inactive** characters are set by a host; ask a host to change them.\n\n"
             + "\n".join(lines),
             color=EMBED_COLOR,
         )
@@ -817,6 +839,11 @@ class CharacterStatusEditor(discord.ui.View):
                 "You don't have any characters yet. Ask a host to add them.", ephemeral=True
             )
             return
+        if not self.editable:
+            await interaction.response.send_message(
+                "All your characters are marked 💤 Inactive by a host. Ask a host to change them.", ephemeral=True
+            )
+            return
         await interaction.response.send_message(embed=self.embed(), view=self, ephemeral=True)
 
     async def refresh(self, interaction: discord.Interaction) -> None:
@@ -836,13 +863,89 @@ class CharacterStatusEditor(discord.ui.View):
         await interaction.response.edit_message(content="Cancelled. Nothing was changed.", embed=None, view=None)
 
     async def _save(self, interaction: discord.Interaction) -> None:
-        db.set_character_statuses(self.bot.conn, self.player.id, self.draft)
+        # players may only set static/sub; inactive characters aren't in the draft
+        assert all(v in PLAYER_CHARACTER_STATUSES for v in self.draft.values())
+        db.set_character_statuses(self.bot.conn, self.player.id, self.draft, changed_by=interaction.user.id)
         self.stop()
-        counts = {s: sum(1 for v in self.draft.values() if v == s) for s in db.CHARACTER_STATUSES}
+        counts = {s: sum(1 for v in self.draft.values() if v == s) for s in PLAYER_CHARACTER_STATUSES}
         summary = " · ".join(f"{character_status_label(s)}: {n}" for s, n in counts.items())
         await interaction.response.edit_message(
             content=f"✅ Saved your character status. {summary}", embed=self.embed(), view=None
         )
+
+
+def damage_history_embed(conn, char) -> discord.Embed:
+    """A character's current damage and last 15 logged runs (★ = counted in the average)."""
+    runs = conn.execute(
+        """
+        SELECT l.started_at, l.finished_at, r.damage, r.normalized FROM damage_runs r
+        JOIN damage_logs l ON l.id = r.log_id WHERE r.character_id = ? ORDER BY l.started_at DESC LIMIT 15
+        """,
+        (char["id"],),
+    ).fetchall()
+    averaged = damage.average_runs(conn)
+    lines = [
+        f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'], 'd')} · "
+        f"{r['damage'] / 1e9:.2f}B in {(r['finished_at'] - r['started_at']) / 60:.1f} min → **{r['normalized']:.2f}**"
+        for i, r in enumerate(runs)
+    ]
+    dmg = f"{char['dmg']:.2f}" if char["dmg"] is not None else "not set"
+    embed = discord.Embed(
+        title=f"{char['ign']} ({char['job'] or '?'}): damage {dmg}",
+        description="\n".join(lines) or "*No runs recorded yet. The damage comes from the roster sheet.*",
+        color=EMBED_COLOR,
+    )
+    embed.set_footer(text=f"★ = counted in the average (last {averaged} runs) · scaled to {damage.NORMALIZE_MINUTES:g} min")
+    return embed
+
+
+class DamageHistoryPicker(discord.ui.View):
+    """From /cq characters: pick one of your characters to see its damage history (same view as
+    /host damage_history). The dropdown stays, so you can switch characters."""
+
+    def __init__(self, bot: "MonkeyBot", player: db.Player):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.characters = {c["id"]: c for c in db.list_characters(bot.conn, player.id)}
+        self.selected: int | None = None
+        self._build()
+
+    def _build(self) -> None:
+        self.clear_items()
+        options = [
+            discord.SelectOption(
+                label=f"{c['ign']} ({c['job'] or '?'})"[:100],
+                value=str(c["id"]),
+                description=f"Damage {c['dmg']:.2f}" if c["dmg"] is not None else "No damage recorded",
+                default=c["id"] == self.selected,
+            )
+            for c in list(self.characters.values())[:25]  # Discord allows 25 options per dropdown
+        ]
+        select = discord.ui.Select(placeholder="Choose a character…", options=options)
+        select.callback = self._pick
+        self.add_item(select)
+
+    def embed(self) -> discord.Embed:
+        if self.selected is None:
+            return discord.Embed(
+                title="Damage history",
+                description="Pick a character to see its damage from the hosts' damage logs.",
+                color=EMBED_COLOR,
+            )
+        return damage_history_embed(self.bot.conn, self.characters[self.selected])
+
+    async def send(self, interaction: discord.Interaction) -> None:
+        if not self.characters:
+            await interaction.response.send_message(
+                "You don't have any characters yet. Ask a host to add them.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(embed=self.embed(), view=self, ephemeral=True)
+
+    async def _pick(self, interaction: discord.Interaction) -> None:
+        self.selected = int(interaction.data["values"][0])
+        self._build()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
 class CharacterStatusSelect(discord.ui.Select):
@@ -856,6 +959,7 @@ class CharacterStatusSelect(discord.ui.Select):
                 default=status == current,
             )
             for status, (emoji, name, help_text) in CHARACTER_STATUS_INFO.items()
+            if status in PLAYER_CHARACTER_STATUSES
         ]
         super().__init__(options=options, row=row)
         self.character_id = character["id"]

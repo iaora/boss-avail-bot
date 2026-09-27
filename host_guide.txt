@@ -55,9 +55,9 @@ KEY IDEAS
   /host status and /host availability once that week is "next week" or "this week".
 - Player status:
     active     Normal roster member. Counted in /host status and /host availability.
-    sub        Substitute, used as needed. Shown separately in /host status and included
-               in /host availability with include_subs:True.
     inactive   Not currently running. Ignored by status and availability.
+  (A CHARACTER's status is separate: see character status, ⭐ static / ⏳ flex /
+  💤 inactive.)
 - Slotting stays in the Google Sheet. The bot learns squads and slot status when you upload
   the sheet with /host import.
 
@@ -65,26 +65,31 @@ KEY IDEAS
 1. CHECKING AVAILABILITY
 ------------------------
 /host status [week]
-    How many ACTIVE players have confirmed (e.g. 41 / 73), split into "No change" and
-    "Updated", plus how many substitutes have confirmed. Lists every player who SUBMITTED A
-    SCHEDULE CHANGE for the week (substitutes marked "(sub)"). Look up someone's changed
+    How many ACTIVE players have confirmed (e.g. 41 / 73), with one line each for
+    ✅ No change, ✏️ Updated and ⏳ Not confirmed yet. Lists every player who SUBMITTED A
+    SCHEDULE CHANGE for the week. Look up someone's changed
     schedule with /host availability player:<name>.
+    The 📋 "Open availability" button opens the /host availability view for the same week
+    (as a new message, so the status stays above it).
+    It also lists CHARACTER STATUS CHANGES from the last 7 days, with before and after:
+        Alice: Ace (NL) ⭐ Static → 💤 Inactive
+        Bob: Bolt (NL) ⭐ Static → ⏳ Flex (by host)
+    If a character changed more than once, you see where it started and where it ended up;
+    one changed and then changed back isn't listed. "(by host)" = changed with
+    /character edit rather than by the player. Every change is kept in the bot's database.
 
-/host availability [player] [week] [include_subs]
+/host availability [player] [week]
     Without a player: availability for every active player.
       - The message shows, per squad, how many players are 🟢 / 🟡 / 🔴.
-      - The attached CSV has the full player-by-squad grid (player, Discord, status,
-        source = weekly/default, confirmed, one column per squad). Open it in Excel or
-        paste it into the Google Sheet.
       - Buttons and a squad dropdown underneath help with slotting. The buttons are
         📋 Overview, 🟢 Preferred, 🟡 Available; the one for what's on screen is blue
         (the message opens on Overview).
           📋 Overview                   The counts per squad.
           🟢 Preferred / 🟡 Available   Pick the level to show.
           Squad dropdown: "All squads"  Every squad with the players at that level (names).
-                                        ⏳ marks players who only have sub characters at
+                                        ⏳ marks players who only have ⏳ Flex characters at
                                         that level; they're listed after players with a
-                                        static character. "(sub)" = substitute player.
+                                        static character.
           Squad dropdown: a squad       That squad's characters at that level, grouped by
                                         class under role headings, on these pages:
                                           Page 1  HP:   DRK, ARAN
@@ -100,13 +105,13 @@ KEY IDEAS
                                         in billions (27.5-minute scale), rounded down to one
                                         decimal (3.08 -> 3.0b), in a shaded box so it's easy
                                         to skim; "?" = no damage recorded.
-                                        Order: static characters first, then ⏳ subs; each
+                                        Order: static characters first, then ⏳ Flex ones; each
                                         highest damage first (no damage last).
                                         Inactive characters are left out.
                                         🔀 "Group by player" switches to players A-Z, each
                                         with their characters as bullets (class icon and
                                         name, or "ragu/DRK" without an icon), ordered:
-                                          1. static, then ⏳ sub
+                                          1. static, then ⏳ flex
                                           2. class group: Warrior (HERO PAL DRK DW ARAN),
                                              Magician (FP IL BSP BW EVAN), Archer (BM MM
                                              WA), Thief (NL SHAD DB NW), Pirate (BUCC SAIR
@@ -134,7 +139,7 @@ KEY IDEAS
     automatically the first time they use the bot.
 
 Only hosts can add or change players and characters. Players can view their characters
-(/my characters) and set their own availability, but can't edit the roster.
+(/cq characters) and set their own availability, but can't edit the roster.
 
 /player add name:<name> [member:<@member>] [username:<discord username>] [status]
     Add a new player. Pick their Discord account with member (recommended). If they're
@@ -143,7 +148,7 @@ Only hosts can add or change players and characters. Players can view their char
     Then add their characters. The player sets their usual availability with "Update my default" in
     /cq availability.
 
-/player edit player:<player> [name:<new name>] [status:<Active | Inactive | Substitute>]
+/player edit player:<player> [name:<new name>] [status:<Active | Inactive>]
     Rename a player, change their status, or both.
 
 /character add player:<player> ign:<IGN> job:<job> buff:<role> [dmg] [status]
@@ -156,10 +161,12 @@ Only hosts can add or change players and characters. Players can view their char
     owner moves the character to another player (pick from the suggestions). Its damage
     history, character-specific availability and status move with it.
 
-Character status (⭐ static / ⏳ sub / 💤 inactive) shows which characters a player wants
-slotted. Players set it themselves with the "Set character status" button in /my characters. Hosts can also set it with
-/character add or /character edit (status option). It starts as Static for
-characters marked Perm on the sheet, Sub otherwise; /host import never changes it.
+Character status (⭐ static / ⏳ flex / 💤 inactive) shows which characters a player wants
+slotted. Players choose Static or Flex themselves with the "Set character status" button in
+/cq characters. Only hosts can mark a character 💤 Inactive (or change it back), with
+/character add or /character edit (status option); players see inactive characters as
+locked. It starts as Static for
+characters marked Perm on the sheet, Flex otherwise; /host import never changes it.
 
 /character remove character:<IGN>
     Remove a character, including its damage history and availability overrides.
@@ -179,7 +186,7 @@ characters marked Perm on the sheet, Sub otherwise; /host import never changes i
     scaled to a 27.5-minute run, so it's stored as-is. It's only used for characters
     with no uploaded damage logs.
     What it does NOT change:
-      - Player statuses (active/inactive/sub).
+      - Player statuses (active/inactive).
       - Availability players already set in the bot (default, weekly or per-character).
       - Characters that are in the bot but missing from the CSV (they're listed in the reply).
 
@@ -284,7 +291,7 @@ What happens:
         damage / 1,000,000,000 x 27.5 / run minutes
     e.g. 4,027,079,300 over 24.3 minutes -> 4.55
   - The character's damage becomes the AVERAGE OF THEIR LAST 3 RUNS (change the number
-    with /config damage_logs). This is the "dmg" shown by /my characters.
+    with /config damage_logs). This is the "dmg" shown by /cq characters.
   - The bot reacts ✅ when a log is saved. It replies only if something needs attention.
   - Names the bot can't match to a roster character are FLAGGED: the bot adds a ⚠️
     reaction and replies to you (with a ping) listing those names. Everyone else in the

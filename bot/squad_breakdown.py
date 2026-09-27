@@ -71,7 +71,7 @@ def build_breakdown(
 
 
 def _player_name(entry: Entry) -> str:
-    return entry.player.name + (" (sub)" if entry.player.status == "sub" else "")
+    return entry.player.name
 
 
 INDENT = "\u2003"  # em space: Discord strips ordinary leading spaces
@@ -337,8 +337,8 @@ class SquadBreakdownView(discord.ui.View):
         """Every squad with the players at `level` (names only; pick a squad for characters)."""
         embed = discord.Embed(
             title=f"{LEVEL_EMOJI[level]} {level} players per squad: {timeutil.week_label(self.week)}",
-            description="⏳ = only sub characters at this level (listed after players with a static "
-            "character). Pick a squad below to see their characters.",
+            description="⏳ = the player has no static character at this level, only ⏳ Flex ones; "
+            "they're listed after players with a static character. Pick a squad below to see their characters.",
             color=EMBED_COLOR,
         )
         per_field = min(1024, EMBED_BUDGET // max(1, len(self.squads)))
@@ -348,7 +348,7 @@ class SquadBreakdownView(discord.ui.View):
             ts = timeutil.discord_ts(s.starts_at, "f")
             value = ts + "\n" + (_fit(names, per_field - len(ts) - 1) if names else "*No one*")
             embed.add_field(name=f"Squad {s.number} ({len(entries)})", value=value, inline=False)
-        embed.set_footer(text="⏳ only sub characters available · (sub) = substitute player")
+        embed.set_footer(text="⏳ = only ⏳ Flex characters")
         return embed
 
     def detail_pages(self, number: int, level: str) -> list[list[str]]:
@@ -394,7 +394,7 @@ class SquadBreakdownView(discord.ui.View):
             else "Grouped by class: HP, BSP, SI | CRIT | DPS A-Z · damage (billions) - character, "
             "static first, then highest damage"
         )
-        embed.set_footer(text=f"{paging}{grouping} · ⏳ = sub character · Inactive characters hidden")
+        embed.set_footer(text=f"{paging}{grouping} · ⏳ = Flex character · Inactive characters hidden")
         if self.view_mode == "class":
             embed.description += "\n\n" + (pages[page][0] if pages[page] else "*No one*")
             return embed
