@@ -1,0 +1,10 @@
+1. Get this week’s availability status 
+    - Get the # of players that confirmed their availability 
+2. Get_weekly_availability (no variable)
+    - show all availability for all active players for this upcoming week. A new week starts on Sunday. 
+    - First check if there's any custom availability for players for that week. If nothing is found, then display the default availaiblity for that player 
+3. Get_weekly_availability (variable: player_name)
+    - Search through any posted availability input player_name for this upcoming week in Weekly availability (table) 
+    - If no variable, send the default availability from Player table 
+4. Mark active/non-active/substitute
+    - Allow the host to toggle if a player_name status as active, non-active, or they're a substitute (aka as needed)

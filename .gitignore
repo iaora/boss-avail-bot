@@ -427,3 +427,18 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# --- Python / Monkey Inc bot ---
+.venv/
+venv/
+*.pyc
+.pytest_cache/
+# Runtime data (SQLite database, backups, logs) -- created automatically by the bot
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+# Roster data contains players' Discord handles/IDs -- never publish it
+bot_data/
