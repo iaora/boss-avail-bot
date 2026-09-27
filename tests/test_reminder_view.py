@@ -62,7 +62,7 @@ def test_reminder_pings_player_role(setup):
     mentions = sent["allowed_mentions"]
     assert [r.id for r in mentions.roles] == [555] and mentions.everyone is False and mentions.users is False
     labels = [child.item.label for child in sent["view"].children]
-    assert labels == ["View my availability", "No change", "Update this week"]
+    assert labels == ["View my availability", "No change", "Change weekly availability"]
 
 
 def test_reminder_without_player_role_has_no_ping(tmp_path):
@@ -73,23 +73,37 @@ def test_reminder_without_player_role_has_no_ping(tmp_path):
     bot.conn.close()
 
 
-def test_list_layout_shows_every_squad_in_order(setup):
-    bot, player = setup
-    embed = player_summary_embed(bot, player, WEEK)
-    assert re.findall(r"(\S+) \*\*Squad (\d+)\*\*", embed.description) == [
-        ("🟢", "1"), ("🔴", "2"), ("🟡", "3"), ("🟢", "4")
-    ]
-    assert "Your default schedule" in embed.description
-    assert "Showing full list" in embed.footer.text
+class Response:
+    def __init__(self):
+        self.sent, self.edited = None, None
+
+    async def send_message(self, content=None, **kwargs):
+        self.sent = {"content": content, **kwargs}
+
+    async def edit_message(self, **kwargs):
+        self.edited = kwargs
 
 
-def test_grouped_layout_sections_by_level(setup):
+def click(bot, *, ephemeral_message=None):
+    """A fake interaction from user 42; `ephemeral_message` = pressed on a private (True) or public message."""
+    message = None if ephemeral_message is None else SimpleNamespace(flags=SimpleNamespace(ephemeral=ephemeral_message))
+    return SimpleNamespace(
+        client=bot, user=SimpleNamespace(id=42, name="tester"), message=message, response=Response()
+    )
+
+
+def rows(view):
+    return [[c["label"] for c in r["components"]] for r in view.to_components()]
+
+
+def test_summary_is_always_grouped_by_availability(setup):
     bot, player = setup
-    text = player_summary_embed(bot, player, WEEK, layout="grouped").description
-    preferred, available, not_available = text.split("\n\n")[1:4]
+    text = player_summary_embed(bot, player, WEEK).description
+    preferred, available, not_available = text.split("\n\n")[2:5]  # after the check-in and note lines
     assert preferred.startswith("🟢 **Preferred (2)**") and "Squad 1**" in preferred and "Squad 4**" in preferred
     assert available.startswith("🟡 **Available (1)**") and "Squad 3**" in available
     assert not_available.startswith("🔴 **Not Available (1)**") and "Squad 2**" in not_available
+    assert "Your default schedule" in text
 
 
 def test_view_uses_this_weeks_change_and_lists_differences(setup):
@@ -99,112 +113,135 @@ def test_view_uses_this_weeks_change_and_lists_differences(setup):
     )
     embed = player_summary_embed(bot, player, WEEK)
     assert "Changed for this week only" in embed.description
-    assert re.search(r"🔴 \*\*Squad 1\*\*", embed.description)
+    assert re.search(r"🔴 \*\*Not Available \(2\)\*\*\n\*\*Squad 1\*\*", embed.description)
     diffs = next(f for f in embed.fields if f.name == "Different from your default")
     assert diffs.value == "Squad 1: 🟢 → 🔴"
 
 
-def test_layout_toggle_is_remembered(setup):
-    bot, player = setup
-    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=FakeResponse())
-    asyncio.run(LayoutToggleButton("grouped", WEEK.isoformat()).callback(interaction))
-    [edit] = interaction.response.edits
-    assert "🟢 **Preferred (2)**" in edit["embed"].description
-    assert get_layout(bot.conn, player.id) == "grouped"
-    toggles = [c for c in edit["view"].children if isinstance(c, LayoutToggleButton)]
-    assert [t.item.label for t in toggles] == ["Show full list"]
-    rows = edit["view"].to_components()
-    assert [len(r["components"]) for r in rows] == [4, 2]  # actions, then view toggles
-
-
-def test_update_my_default_button_opens_default_editor(setup):
-    from bot.views import AvailabilityEditor, ReminderButton, player_summary_view
+def test_button_rows_and_check_in_status(setup):
+    from bot.views import player_summary_view
 
     bot, player = setup
-    labels = [c.item.label for c in player_summary_view(WEEK, "time", "list").children if hasattr(c, "item")]
-    assert "Update my default" in labels  # on /cq availability
+    view = player_summary_view(bot, player, WEEK, "time")
+    assert rows(view) == [
+        ["No change", "Change weekly availability", "Change a character's week", "Update a future week"],
+        ["Sort by squad #", "Change default availability"],
+    ]
+    assert "haven't checked in" in player_summary_embed(bot, player, WEEK).description
+    first = view.children[0].item
+    assert first.style == discord.ButtonStyle.success  # prompting: green
 
-    class Response:
-        async def send_message(self, **kwargs):
-            self.kwargs = kwargs
+    db.confirm_no_change(bot.conn, player.id, WEEK)
+    first = player_summary_view(bot, player, WEEK, "time").children[0].item
+    assert (first.label, first.style) == ("Checked in", discord.ButtonStyle.secondary)
+    assert "You're checked in:** using your default" in player_summary_embed(bot, player, WEEK).description
 
-    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
+    db.set_weekly_availability(bot.conn, player.id, WEEK, {1: "Not Available"})
+    first = player_summary_view(bot, player, WEEK, "time").children[0].item
+    assert (first.label, first.style) == ("Use my default", discord.ButtonStyle.secondary)
+    assert "You're checked in:** you changed this week" in player_summary_embed(bot, player, WEEK).description
+
+
+def test_no_change_refreshes_own_view_and_replies_to_reminder(setup):
+    from bot.views import ReminderButton
+
+    bot, player = setup
+    db.set_weekly_availability(bot.conn, player.id, WEEK, {1: "Not Available"})
+
+    own = click(bot, ephemeral_message=True)  # pressed on their private /cq availability
+    asyncio.run(ReminderButton("nochange", WEEK.isoformat()).callback(own))
+    assert db.get_confirmation(bot.conn, player.id, WEEK) == "no_change"
+    assert db.get_weekly_availability(bot.conn, player.id, WEEK) == {}  # back to the default
+    assert own.response.sent is None and own.response.edited  # edited in place...
+    assert rows(own.response.edited["view"])[0][0] == "Checked in"  # ...showing they're checked in
+
+    public = click(bot, ephemeral_message=False)  # pressed on the shared reminder
+    asyncio.run(ReminderButton("nochange", WEEK.isoformat()).callback(public))
+    assert public.response.sent["ephemeral"] and "Thanks" in public.response.sent["content"]
+
+
+def test_change_default_button_opens_default_editor(setup):
+    from bot.views import AvailabilityEditor, ReminderButton
+
+    bot, player = setup
+    interaction = click(bot)
     asyncio.run(ReminderButton("default", WEEK.isoformat()).callback(interaction))
-    editor = interaction.response.kwargs["view"]
+    editor = interaction.response.sent["view"]
     assert isinstance(editor, AvailabilityEditor) and editor.mode == "default"
     assert editor.draft == db.get_default_availability(bot.conn, player.id)
 
 
-def test_no_change_button_confirms_the_week(setup):
-    from bot.views import ReminderButton, player_summary_view
-
-    from bot import timeutil
-
-    bot, player = setup
-    week = timeutil.upcoming_week_start(timeutil.now_utc(), bot.tz)  # a week that hasn't finished
-    labels = [c.item.label for c in player_summary_view(week, "time", "list").children if hasattr(c, "item")]
-    assert "No change" in labels  # on /cq availability
-    db.set_weekly_availability(bot.conn, player.id, week, {1: "Not Available"})
-
-    class Response:
-        async def send_message(self, *args, **kwargs):
-            pass
-
-    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
-    asyncio.run(ReminderButton("nochange", week.isoformat()).callback(interaction))
-    assert db.get_confirmation(bot.conn, player.id, week) == "no_change"
-    assert db.get_weekly_availability(bot.conn, player.id, week) == {}  # back to the default
-
-
-def test_update_a_week_button_opens_week_picker(setup):
-    from bot.views import ReminderButton, WeekPicker, player_summary_view
+def test_update_a_future_week_button_opens_week_picker(setup):
+    from bot.views import ReminderButton, WeekPicker
 
     bot, _ = setup
-    labels = [c.item.label for c in player_summary_view(WEEK, "time", "list").children if hasattr(c, "item")]
-    assert "Update a week" in labels  # on /cq availability
-
-    class Response:
-        async def send_message(self, **kwargs):
-            self.kwargs = kwargs
-
-    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
+    interaction = click(bot)
     asyncio.run(ReminderButton("plan").callback(interaction))
-    assert isinstance(interaction.response.kwargs["view"], WeekPicker)
+    assert isinstance(interaction.response.sent["view"], WeekPicker)
 
 
-def test_character_availability_button_and_picker(setup):
-    from bot.views import AvailabilityEditor, CharacterPicker, ReminderButton, player_summary_view
+def test_change_a_characters_week(setup):
+    from bot.squad_breakdown import build_breakdown
+    from bot.views import AvailabilityEditor, CharacterPicker, ReminderButton
 
-    bot, player = setup
+    bot, player = setup  # default: 1 Preferred, 2 Not Available, 3 Available, 4 Preferred
     db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
     db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
     alt = db.get_character(bot.conn, "Alt")
-    db.set_character_overrides(bot.conn, alt["id"], {2: "Preferred"})
+    db.set_character_overrides(bot.conn, alt["id"], {2: "Preferred"})  # ongoing exception
 
-    view = player_summary_view(WEEK, "time", "list")
-    row0 = [c["label"] for c in view.to_components()[0]["components"]]
-    assert row0 == ["No change", "Update a week", "Update my default", "Character availability"]
-
-    class Response:
-        async def send_message(self, **kwargs):
-            self.sent = kwargs
-
-        async def edit_message(self, **kwargs):
-            self.edited = kwargs
-
-    interaction = SimpleNamespace(client=bot, user=SimpleNamespace(id=42, name="tester"), response=Response())
-    asyncio.run(ReminderButton("chars", WEEK.isoformat()).callback(interaction))
+    interaction = click(bot)
+    asyncio.run(ReminderButton("charweek", WEEK.isoformat()).callback(interaction))
     picker = interaction.response.sent["view"]
-    assert isinstance(picker, CharacterPicker)
-    options = {o.label: o.description for o in picker.children[0].options}
-    assert options == {"Main (NL)": "Static · Follows your default",
-                       "Alt (DRK)": "Flex · 1 squad(s) differ from your default"}
+    assert isinstance(picker, CharacterPicker) and picker.this_week_only
+    assert {o.label: o.description for o in picker.children[0].options} == {
+        "Main (NL)": "Static · No changes this week", "Alt (DRK)": "Flex · No changes this week"
+    }
 
     pick = SimpleNamespace(data={"values": [str(alt["id"])]}, response=Response())
     asyncio.run(picker._pick(pick))
     editor = pick.response.edited["view"]
-    assert isinstance(editor, AvailabilityEditor) and editor.mode == "character"
-    assert editor.character["ign"] == "Alt" and editor.draft[2] == "Preferred"  # starts from default + override
+    assert isinstance(editor, AvailabilityEditor) and editor.mode == "character_week"
+    assert editor.draft == {1: "Preferred", 2: "Preferred", 3: "Available", 4: "Preferred"}  # its usual week
+    assert "this week only" in editor.embed().title or "only" in editor.embed().title
+
+    editor.draft[4] = "Not Available"  # can't bring Alt to squad 4 this week
+    assert "Not Available ✏️ (usual 🟢)" in editor.embed().description
+    asyncio.run(editor._save(SimpleNamespace(response=Response())))
+
+    assert db.get_character_weekly(bot.conn, alt["id"], WEEK) == {4: "Not Available"}  # only the change
+    assert db.get_character_overrides(bot.conn, alt["id"]) == {2: "Preferred"}  # ongoing exception untouched
+    assert db.get_confirmation(bot.conn, player.id, WEEK) == "updated"  # counts as checking in
+    # hosts see it: Alt isn't available for squad 4 this week, but still is next week
+    squads = db.squads_for_week(bot.conn, WEEK, bot.tz)
+    this_week = build_breakdown(bot.conn, [player], squads, WEEK)
+    assert [c["ign"] for e in this_week[4]["Preferred"] for c in e.characters] == ["Main"]
+    next_week = build_breakdown(bot.conn, [player], squads, date(2026, 10, 4))
+    assert sorted(c["ign"] for e in next_week[4]["Preferred"] for c in e.characters) == ["Alt", "Main"]
+    # the player sees it on /cq availability
+    field = next(f for f in player_summary_embed(bot, player, WEEK).fields if f.name == "Characters changed for this week")
+    assert field.value == "🧩 **Alt**: Squad 4 🔴"
+
+    # "Use my default" puts the whole week back, character changes included
+    db.confirm_no_change(bot.conn, player.id, WEEK)
+    assert db.get_character_weekly(bot.conn, alt["id"], WEEK) == {}
+
+
+def test_ongoing_character_availability_still_in_cq_characters(setup):
+    from bot.views import AvailabilityEditor, CharacterPicker, ReminderButton
+
+    bot, player = setup
+    db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
+    alt = db.get_character(bot.conn, "Alt")
+    db.set_character_overrides(bot.conn, alt["id"], {2: "Preferred"})
+    interaction = click(bot)
+    asyncio.run(ReminderButton("chars", WEEK.isoformat()).callback(interaction))
+    picker = interaction.response.sent["view"]
+    assert isinstance(picker, CharacterPicker) and not picker.this_week_only
+    assert picker.children[0].options[0].description == "Flex · 1 squad(s) differ from your default"
+    pick = SimpleNamespace(data={"values": [str(alt["id"])]}, response=Response())
+    asyncio.run(picker._pick(pick))
+    assert pick.response.edited["view"].mode == "character"
 
 
 def test_cq_characters_has_character_availability_button(setup):

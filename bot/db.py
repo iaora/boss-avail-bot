@@ -340,6 +340,17 @@ MIGRATIONS: list[str] = [
         );
     DELETE FROM settings WHERE key IN (SELECT key FROM boss_settings);
     """,
+    # 7: a character's availability for one week only (on top of its ongoing exceptions)
+    """
+    CREATE TABLE character_weekly_availability (
+        boss_id      INTEGER NOT NULL REFERENCES bosses (id) ON DELETE CASCADE,
+        character_id INTEGER NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
+        week_start   TEXT NOT NULL,
+        squad        INTEGER NOT NULL,
+        level        TEXT NOT NULL CHECK (level IN ('Preferred', 'Available', 'Not Available')),
+        PRIMARY KEY (boss_id, character_id, week_start, squad)
+    );
+    """,
 ]
 
 
@@ -861,11 +872,18 @@ def set_weekly_availability(
 
 
 def confirm_no_change(conn: sqlite3.Connection, player_id: int, week_start: date, *, boss_id: int = CQ) -> None:
-    """Player keeps their default for the week; any earlier weekly submission is discarded."""
+    """Player keeps their default for the week; any earlier changes for that week (their own and
+    their characters') are discarded."""
+    wk = week_start.isoformat()
     with conn:
         conn.execute(
             "DELETE FROM weekly_availability WHERE boss_id = ? AND player_id = ? AND week_start = ?",
-            (boss_id, player_id, week_start.isoformat()),
+            (boss_id, player_id, wk),
+        )
+        conn.execute(
+            "DELETE FROM character_weekly_availability WHERE boss_id = ? AND week_start = ? "
+            "AND character_id IN (SELECT id FROM characters WHERE player_id = ?)",
+            (boss_id, wk, player_id),
         )
         _confirm(conn, player_id, week_start, "no_change", boss_id)
 
@@ -898,23 +916,90 @@ def get_confirmation(conn: sqlite3.Connection, player_id: int, week_start: date,
 LEVEL_RANK = {level: i for i, level in enumerate(LEVELS)}  # lower = more available
 
 
+def get_character_weekly(
+    conn: sqlite3.Connection, character_id: int, week_start: date, *, boss_id: int = CQ
+) -> Availability:
+    """The character's availability changes for just this week (squad -> level)."""
+    rows = conn.execute(
+        "SELECT squad, level FROM character_weekly_availability "
+        "WHERE boss_id = ? AND character_id = ? AND week_start = ?",
+        (boss_id, character_id, week_start.isoformat()),
+    )
+    return {r["squad"]: r["level"] for r in rows}
+
+
+def set_character_weekly(
+    conn: sqlite3.Connection,
+    player_id: int,
+    character_id: int,
+    week_start: date,
+    changes: Availability,
+    *,
+    boss_id: int = CQ,
+) -> None:
+    """Replace the character's changes for this week. Saving counts as the player checking in
+    for the week if they hadn't yet."""
+    wk = week_start.isoformat()
+    with conn:
+        conn.execute(
+            "DELETE FROM character_weekly_availability WHERE boss_id = ? AND character_id = ? AND week_start = ?",
+            (boss_id, character_id, wk),
+        )
+        conn.executemany(
+            "INSERT INTO character_weekly_availability (boss_id, character_id, week_start, squad, level) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(boss_id, character_id, wk, s, lvl) for s, lvl in changes.items()],
+        )
+        if get_confirmation(conn, player_id, week_start, boss_id=boss_id) is None:
+            _confirm(conn, player_id, week_start, "updated", boss_id)
+
+
+def characters_changed_for_week(
+    conn: sqlite3.Connection, player_id: int, week_start: date, *, boss_id: int = CQ
+) -> dict[str, Availability]:
+    """{IGN: changes} for the player's characters that have availability set for just this week."""
+    rows = conn.execute(
+        """
+        SELECT c.ign, w.squad, w.level FROM character_weekly_availability w
+        JOIN characters c ON c.id = w.character_id
+        WHERE w.boss_id = ? AND w.week_start = ? AND c.player_id = ?
+        ORDER BY c.ign COLLATE NOCASE, w.squad
+        """,
+        (boss_id, week_start.isoformat(), player_id),
+    )
+    result: dict[str, Availability] = {}
+    for r in rows:
+        result.setdefault(r["ign"], {})[r["squad"]] = r["level"]
+    return result
+
+
 def character_week_availability(
-    conn: sqlite3.Connection, character: sqlite3.Row, week_start: date, *, boss_id: int = CQ
+    conn: sqlite3.Connection,
+    character: sqlite3.Row,
+    week_start: date,
+    *,
+    boss_id: int = CQ,
+    include_week_changes: bool = True,
 ) -> Availability:
     """A character's availability for a week.
 
     Without a weekly change it's the player's default with the character's overrides on top.
     With a weekly change, each squad uses the less available of the weekly level and the
     character's override, so a character-specific limit ("DRK weekends only") still applies.
+    Finally, anything set for this character for just this week wins (unless
+    include_week_changes is False, which gives the character's usual availability for the week).
     """
     overrides = get_character_overrides(conn, character["id"], boss_id=boss_id)
     weekly = get_weekly_availability(conn, character["player_id"], week_start, boss_id=boss_id)
     if not weekly:
-        return {**get_default_availability(conn, character["player_id"], boss_id=boss_id), **overrides}
-    result = dict(weekly)
-    for squad, level in overrides.items():
-        if squad in result and LEVEL_RANK[level] > LEVEL_RANK[result[squad]]:
-            result[squad] = level
+        result = {**get_default_availability(conn, character["player_id"], boss_id=boss_id), **overrides}
+    else:
+        result = dict(weekly)
+        for squad, level in overrides.items():
+            if squad in result and LEVEL_RANK[level] > LEVEL_RANK[result[squad]]:
+                result[squad] = level
+    if include_week_changes:
+        result.update(get_character_weekly(conn, character["id"], week_start, boss_id=boss_id))
     return result
 
 

@@ -1,7 +1,7 @@
 """Player-facing slash commands, all under /cq:
 
-  /cq availability   your CQ availability; No change, Update a week, Update my default and
-                     Character availability are buttons on it
+  /cq availability   your CQ availability; No change, Update my default, Character availability
+                     and Update a future week are buttons on it
   /cq characters     your characters; Set character status, Character availability and
                      Damage history are buttons on it
 
