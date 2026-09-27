@@ -33,8 +33,6 @@ Press one of its buttons:
   ✅ No change              Your default schedule works this week. That's it, you're done.
   ✏️ Update this week       Opens the editor so you can set different availability for just
                             this week.
-  🔀 Sort by squad #        Shows you a private copy of the squad times sorted by squad
-                            number (the reminder itself is always in time order).
 
 In "View my availability" you can switch how your squads are shown:
   📊 Group by availability   Squads sectioned into 🟢 Preferred, 🟡 Available and
@@ -124,8 +122,9 @@ Character status
 Squad order
   Every list of squads starts in time order (the order they run in the week). Press 🔀
   "Sort by squad #" on any of them to sort by squad number instead. The bot remembers your
-  choice and uses it everywhere: your availability, the editors, and the reminder's private
-  copy. Press 🔀 "Sort by time" to switch back.
+  choice and uses it everywhere: your availability and the editors. (The reminder in the
+  channel is shared by everyone, so it always lists squads in time order; press "View my
+  availability" on it to see them in your order.) Press 🔀 "Sort by time" to switch back.
 
 Joining the roster, and adding, changing or removing characters, is done by the hosts.
 Ask a host if you're new, have a new character, or something on /my characters is wrong.

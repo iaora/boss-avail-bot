@@ -217,7 +217,6 @@ def reminder_message(bot: "MonkeyBot", week_start: date) -> tuple[discord.Embed,
     wk = week_start.isoformat()
     for action in ("view", "nochange", "update"):
         view.add_item(ReminderButton(action, wk))
-    view.add_item(SquadTimesButton("number", wk))  # shows a private copy sorted by squad number
     return embed, view
 
 
@@ -379,9 +378,11 @@ class SquadTimesButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"avail-times:(?P<order>time|number):(?P<week>\d{4}-\d{2}-\d{2})",
 ):
-    """On the reminder (shared by everyone): show the squad times privately in `order`.
+    """Show the squad times privately in `order`.
 
-    Pressed on the reminder it sends a private copy; pressed on that copy it re-sorts it."""
+    No longer added to new reminders (players sort via "View my availability" instead); kept so the
+    button on reminders posted before that change still works. Pressed on the reminder it sends a
+    private copy; pressed on that copy it re-sorts it."""
 
     def __init__(self, order: str, week: str):
         super().__init__(

@@ -108,7 +108,8 @@ def test_squad_order_is_remembered_across_every_view(bot):
     assert [s.number for s in SquadBreakdownView(bot, WEEK, [player], discord.Embed(title="o"), user_id=99).squads] == [1, 14, 4]
 
 
-def test_reminder_sort_button_sends_private_copy_then_resorts_it(bot):
+def test_old_reminder_sort_button_still_works(bot):
+    """New reminders don't have this button; ones posted earlier do, and it must keep working."""
     from bot.views import SquadTimesButton, get_squad_order
 
     class Response(FakeResponse):

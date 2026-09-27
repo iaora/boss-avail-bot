@@ -61,7 +61,7 @@ def test_reminder_pings_player_role(setup):
     mentions = sent["allowed_mentions"]
     assert [r.id for r in mentions.roles] == [555] and mentions.everyone is False and mentions.users is False
     labels = [child.item.label for child in sent["view"].children]
-    assert labels == ["View my availability", "No change", "Update this week", "Sort by squad #"]
+    assert labels == ["View my availability", "No change", "Update this week"]
 
 
 def test_reminder_without_player_role_has_no_ping(tmp_path):
