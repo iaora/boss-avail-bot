@@ -114,6 +114,7 @@ There are just two commands, both under /cq. Everything else is a button on them
 
   /cq characters            List your characters (status, job, buff, damage, squad). Damage
                             is the average of your recent runs from the hosts' damage logs.
+                            It also says who to message to add new characters.
                             Buttons:
                               Set character status    mark characters static or flex
                                                       (see below)

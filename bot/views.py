@@ -121,7 +121,7 @@ def availability_lines(squads: list[db.SquadTime], availability: db.Availability
     for s in squads:
         level = availability.get(s.number)
         emoji = LEVEL_EMOJI.get(level, UNSET_EMOJI)
-        lines.append(f"{emoji} **Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}")
+        lines.append(f"{emoji} **Squad {s.number}** · {timeutil.discord_ts(s.starts_at)} · {level or 'Not set'}")
     return "\n".join(lines) or "*No squads are configured.*"
 
 
@@ -133,7 +133,7 @@ def grouped_lines(squads: list[db.SquadTime], availability: db.Availability) -> 
         if not members and level is None:
             continue
         name = level or "Not set"
-        body = "\n".join(f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')}" for s in members) or "*None*"
+        body = "\n".join(f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}" for s in members) or "*None*"
         sections.append(f"{emoji} **{name} ({len(members)})**\n{body}")
     return "\n\n".join(sections) if squads else "*No squads are configured.*"
 
@@ -745,7 +745,7 @@ class AvailabilityEditor(discord.ui.View):
                 changed = f" ✏️ ({self._compare_label} {LEVEL_EMOJI.get(default, UNSET_EMOJI)})"
             lines.append(
                 f"{marker}{LEVEL_EMOJI.get(level, UNSET_EMOJI)} **Squad {s.number}** · "
-                f"{timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}{changed}"
+                f"{timeutil.discord_ts(s.starts_at)} · {level or 'Not set'}{changed}"
             )
         return "\n".join(lines)
 
@@ -990,7 +990,7 @@ def damage_history_embed(conn, char, *, boss_id: int = db.CQ) -> discord.Embed:
     ).fetchall()
     averaged = damage.average_runs(conn, boss_id=boss_id)
     lines = [
-        f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'], 'd')} · "
+        f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'])} · "
         f"{r['damage'] / 1e9:.2f}B in {(r['finished_at'] - r['started_at']) / 60:.1f} min → **{r['normalized']:.2f}**"
         for i, r in enumerate(runs)
     ]

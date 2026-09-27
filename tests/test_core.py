@@ -184,3 +184,12 @@ def test_former_substitute_players_become_active(tmp_path):
     with pytest.raises(ValueError):
         db.set_player_status(conn, 1, "sub")  # no longer a player status
     conn.close()
+
+
+def test_roster_contact_setting(monkeypatch):
+    from bot.config import Config
+
+    monkeypatch.setenv("ROSTER_CONTACT", "Robin")
+    assert Config.from_env().roster_contact == "Robin"
+    monkeypatch.setenv("ROSTER_CONTACT", "  ")
+    assert Config.from_env().roster_contact == "a host"

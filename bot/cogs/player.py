@@ -70,7 +70,10 @@ class CqCog(PlayerCommands, commands.GroupCog, group_name="cq", group_descriptio
             )
         embed = discord.Embed(
             title=f"{player.name}'s characters ({len(chars)})",
-            description="\n".join(lines)[:4000] or "*No characters yet. Ask a host to add them.*",
+            description=(
+                ("\n".join(lines)[:3900] or "*No characters yet.*")
+                + f"\n\n➕ Want to add new characters? Message {self.bot.config.roster_contact}."
+            ),
             color=EMBED_COLOR,
         )
         embed.set_footer(text="⭐ Static: prioritize · ⏳ Flex: only if needed · 💤 Inactive: set by a host, not slotted")

@@ -316,7 +316,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         """A player's availability for the week plus exactly what changed from their default."""
         embed = self._player_embed(player, wk, order)
         changes = [
-            f"• **Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')}: "
+            f"• **Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}: "
             f"{LEVEL_EMOJI.get(before, '⚪')} {before or 'Not set'} → {LEVEL_EMOJI[after]} {after}"
             for s, before, after in self._changes(player, wk, order)
         ]
@@ -386,7 +386,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
 
         def overview(order: str) -> discord.Embed:
             lines = [
-                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')} · "
+                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)} · "
                 f"🟢 {counts[s.number]['Preferred']}  🟡 {counts[s.number]['Available']}  "
                 f"🔴 {counts[s.number]['Not Available']}"
                 for s in order_squads(squads, order)

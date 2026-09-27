@@ -305,3 +305,32 @@ def test_cq_characters_damage_history_button(setup):
     assert embed.title == "Main (NL): damage 5.00"
     assert "5.00B in 27.5 min → **5.00**" in embed.description and embed.description.startswith("★")
     assert pick.response.edited["view"].children[0].options[0].default  # dropdown stays, to switch characters
+
+
+def test_cq_characters_prompts_who_to_contact(tmp_path):
+    from bot.cogs.player import CqCog
+
+    for contact, expected in [("Robin", "Message Robin."), ("", "Message a host.")]:
+        bot, player = make_bot(tmp_path / (contact or "default"), player_role_id=None)
+        bot.config = dataclasses.replace(bot.config, roster_contact=contact or "a host")  # as Config.from_env does
+        interaction = click(bot)
+        asyncio.run(CqCog.characters.callback(CqCog(bot), interaction))
+        description = interaction.response.sent["embed"].description
+        assert description.endswith(f"➕ Want to add new characters? {expected}")
+        bot.conn.close()
+
+
+def test_timestamps_include_the_weekday(setup):
+    from bot.squad_breakdown import SquadBreakdownView
+    from bot.views import AvailabilityEditor
+
+    bot, player = setup
+    texts = [
+        player_summary_embed(bot, player, WEEK).description,
+        AvailabilityEditor(bot, mode="weekly", player=player, week=WEEK, initial={}).embed().description,
+    ]
+    view = SquadBreakdownView(bot, WEEK, [player], discord.Embed(title="o"))
+    texts.append("\n".join(f.value for f in view.level_embed("Preferred").fields))
+    for text in texts:
+        assert ":F>" in text  # Discord's long style: "Sunday, September 27, 2026 12:00 PM"
+        assert ":f>" not in text and ":d>" not in text

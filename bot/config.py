@@ -42,6 +42,7 @@ class Config:
     seed_roster_csv: Path
     seed_squad_timings: Path
     class_icons_dir: Path
+    roster_contact: str  # who players message to add characters: a name or a <@id> mention
     log_level: str
 
     @classmethod
@@ -59,5 +60,6 @@ class Config:
             seed_roster_csv=_path(os.getenv("SEED_ROSTER_CSV", "bot_data/Monkey, Inc.  - CQ Roster.csv")),
             seed_squad_timings=_path(os.getenv("SEED_SQUAD_TIMINGS", "bot_data/squad_timings.txt")),
             class_icons_dir=_path(os.getenv("CLASS_ICONS_DIR", "bot_data/class_icons")),
+            roster_contact=os.getenv("ROSTER_CONTACT", "").strip() or "a host",
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
