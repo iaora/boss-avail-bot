@@ -68,9 +68,16 @@ def discord_ts(dt: datetime | int, style: str = "F") -> str:
     return f"<t:{unix}:{style}>"
 
 
-def local_label(unix: int, tz: ZoneInfo, with_zone: bool = False) -> str:
-    """e.g. 'Sun 12:00' (or 'Sun 12:00 EDT') in the given timezone -- for host-facing text and CSV exports."""
-    return datetime.fromtimestamp(unix, timezone.utc).astimezone(tz).strftime("%a %H:%M" + (" %Z" if with_zone else ""))
+def local_label(unix: int, tz: ZoneInfo, with_zone: bool = False, twelve_hour: bool = False) -> str:
+    """e.g. 'Sun 12:00', 'Sun 12:00 EDT', or with twelve_hour 'Sun 12:00 PM EDT', in the given
+    timezone -- for host-facing text and CSV exports."""
+    local = datetime.fromtimestamp(unix, timezone.utc).astimezone(tz)
+    if twelve_hour:
+        # built by hand: strftime's no-leading-zero hour (%-I) isn't available on every platform
+        text = f"{local:%a} {local.hour % 12 or 12}:{local:%M} {local:%p}"
+    else:
+        text = f"{local:%a %H:%M}"
+    return f"{text} {local:%Z}" if with_zone else text
 
 
 def short_week_label(week_start: date) -> str:

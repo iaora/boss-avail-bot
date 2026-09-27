@@ -154,3 +154,15 @@ def test_migrations_are_repeatable(tmp_path):
 def test_week_label_casing():
     assert timeutil.week_label(date(2026, 9, 27)) == "week of Sunday Sep 27, 2026"
     assert timeutil.week_label(date(2026, 10, 4), capital=True) == "Week of Sunday Oct 4, 2026"
+
+
+def test_local_label_twelve_hour():
+    def label(hour, minute, **kw):
+        unix = int(datetime(2026, 9, 27, hour, minute, tzinfo=ET).timestamp())
+        return timeutil.local_label(unix, ET, **kw)
+
+    assert label(12, 0, with_zone=True, twelve_hour=True) == "Sun 12:00 PM EDT"
+    assert label(0, 5, twelve_hour=True) == "Sun 12:05 AM"
+    assert label(21, 25, twelve_hour=True) == "Sun 9:25 PM"
+    assert label(9, 30, twelve_hour=True) == "Sun 9:30 AM"
+    assert label(21, 25) == "Sun 21:25"  # 24-hour stays the default elsewhere

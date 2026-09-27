@@ -276,7 +276,7 @@ class SquadBreakdownView(discord.ui.View):
             )
         ] + [
             discord.SelectOption(
-                label=f"Squad {s.number} · {timeutil.local_label(s.starts_at, self.tz, with_zone=True)}",
+                label=f"Squad {s.number} · {timeutil.local_label(s.starts_at, self.tz, with_zone=True, twelve_hour=True)}",
                 value=str(s.number),
                 description=(
                     f"🟢 {len(self.data[s.number]['Preferred'])} preferred · "

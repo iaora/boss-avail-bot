@@ -293,8 +293,8 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
 
         def render(order: str) -> discord.Embed:
             lines = [
-                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)} · "
-                f"{timeutil.local_label(s.starts_at, self.bot.tz)}" + (" · ✏️ edited for this week" if s.overridden else "")
+                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}"
+                + (" · ✏️ edited for this week" if s.overridden else "")
                 for s in order_squads(squads, order)
             ]
             embed = discord.Embed(
@@ -302,7 +302,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
                 description="\n".join(lines) or "*No squads configured.*",
                 color=EMBED_COLOR,
             )
-            embed.set_footer(text=f"Second time is in {self.bot.tz.key}")
+            embed.set_footer(text="Times are shown in your timezone")
             return embed
 
         view = OrderToggleView(render, self.bot.conn, interaction.user.id)

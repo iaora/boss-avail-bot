@@ -194,8 +194,7 @@ first loaded from bot_data/squad_timings.txt. You can move a squad for one week,
 it permanently.
 
 /host squads [week]
-    List squad times. Each time appears as a Discord timestamp (localized) and in the
-    host timezone. Squads moved for that week are marked ✏️.
+    List squad times, shown in your own timezone. Squads moved for that week are marked ✏️.
 
 /config squad_time squad:<n> [day:<weekday> time:<HH:MM>] [permanent] [reset]
     Time is 24-hour, in the bot timezone (e.g. 21:30).
