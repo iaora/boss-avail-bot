@@ -198,7 +198,7 @@ def test_character_availability_button_and_picker(setup):
     assert isinstance(picker, CharacterPicker)
     options = {o.label: o.description for o in picker.children[0].options}
     assert options == {"Main (NL)": "Static · Follows your default",
-                       "Alt (DRK)": "Sub · 1 squad(s) differ from your default"}
+                       "Alt (DRK)": "Flex · 1 squad(s) differ from your default"}
 
     pick = SimpleNamespace(data={"values": [str(alt["id"])]}, response=Response())
     asyncio.run(picker._pick(pick))

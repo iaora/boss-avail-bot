@@ -56,7 +56,7 @@ KEY IDEAS
 - Player status:
     active     Normal roster member. Counted in /host status and /host availability.
     inactive   Not currently running. Ignored by status and availability.
-  (Whether a CHARACTER is a sub is separate: see character status, ⭐ static / ⏳ sub /
+  (A CHARACTER's status is separate: see character status, ⭐ static / ⏳ flex /
   💤 inactive.)
 - Slotting stays in the Google Sheet. The bot learns squads and slot status when you upload
   the sheet with /host import.
@@ -73,7 +73,7 @@ KEY IDEAS
     (as a new message, so the status stays above it).
     It also lists CHARACTER STATUS CHANGES from the last 7 days, with before and after:
         Alice: Ace (NL) ⭐ Static → 💤 Inactive
-        Bob: Bolt (NL) ⭐ Static → ⏳ Sub (by host)
+        Bob: Bolt (NL) ⭐ Static → ⏳ Flex (by host)
     If a character changed more than once, you see where it started and where it ended up;
     one changed and then changed back isn't listed. "(by host)" = changed with
     /character edit rather than by the player. Every change is kept in the bot's database.
@@ -87,7 +87,7 @@ KEY IDEAS
           📋 Overview                   The counts per squad.
           🟢 Preferred / 🟡 Available   Pick the level to show.
           Squad dropdown: "All squads"  Every squad with the players at that level (names).
-                                        ⏳ marks players who only have sub characters at
+                                        ⏳ marks players who only have ⏳ Flex characters at
                                         that level; they're listed after players with a
                                         static character.
           Squad dropdown: a squad       That squad's characters at that level, grouped by
@@ -105,13 +105,13 @@ KEY IDEAS
                                         in billions (27.5-minute scale), rounded down to one
                                         decimal (3.08 -> 3.0b), in a shaded box so it's easy
                                         to skim; "?" = no damage recorded.
-                                        Order: static characters first, then ⏳ subs; each
+                                        Order: static characters first, then ⏳ Flex ones; each
                                         highest damage first (no damage last).
                                         Inactive characters are left out.
                                         🔀 "Group by player" switches to players A-Z, each
                                         with their characters as bullets (class icon and
                                         name, or "ragu/DRK" without an icon), ordered:
-                                          1. static, then ⏳ sub
+                                          1. static, then ⏳ flex
                                           2. class group: Warrior (HERO PAL DRK DW ARAN),
                                              Magician (FP IL BSP BW EVAN), Archer (BM MM
                                              WA), Thief (NL SHAD DB NW), Pirate (BUCC SAIR
@@ -161,10 +161,12 @@ Only hosts can add or change players and characters. Players can view their char
     owner moves the character to another player (pick from the suggestions). Its damage
     history, character-specific availability and status move with it.
 
-Character status (⭐ static / ⏳ sub / 💤 inactive) shows which characters a player wants
-slotted. Players set it themselves with the "Set character status" button in /cq characters. Hosts can also set it with
-/character add or /character edit (status option). It starts as Static for
-characters marked Perm on the sheet, Sub otherwise; /host import never changes it.
+Character status (⭐ static / ⏳ flex / 💤 inactive) shows which characters a player wants
+slotted. Players choose Static or Flex themselves with the "Set character status" button in
+/cq characters. Only hosts can mark a character 💤 Inactive (or change it back), with
+/character add or /character edit (status option); players see inactive characters as
+locked. It starts as Static for
+characters marked Perm on the sheet, Flex otherwise; /host import never changes it.
 
 /character remove character:<IGN>
     Remove a character, including its damage history and availability overrides.
@@ -184,7 +186,7 @@ characters marked Perm on the sheet, Sub otherwise; /host import never changes i
     scaled to a 27.5-minute run, so it's stored as-is. It's only used for characters
     with no uploaded damage logs.
     What it does NOT change:
-      - Player statuses (active/inactive/sub).
+      - Player statuses (active/inactive).
       - Availability players already set in the bot (default, weekly or per-character).
       - Characters that are in the bot but missing from the CSV (they're listed in the reply).
 

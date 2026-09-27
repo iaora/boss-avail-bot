@@ -755,9 +755,11 @@ class AvailabilityEditor(discord.ui.View):
 
 CHARACTER_STATUS_INFO = {
     "static": ("⭐", "Static", "Prioritize this character when slotting"),
-    "sub": ("⏳", "Sub", "Only slot if needed"),
+    "sub": ("⏳", "Flex", "Only slot if needed"),  # stored as "sub"; shown as Flex
     "inactive": ("💤", "Inactive", "Don't slot this character"),
 }
+# Players choose between these; only a host can mark a character inactive (/character edit).
+PLAYER_CHARACTER_STATUSES = ("static", "sub")
 
 
 def character_status_label(status: str) -> str:
@@ -771,7 +773,9 @@ def character_line(c) -> str:
 
 
 class CharacterStatusEditor(discord.ui.View):
-    """Paged editor: one static/sub/inactive dropdown per character, saved on Save."""
+    """Paged editor: one static/sub dropdown per character, saved on Save.
+
+    Characters a host marked inactive are listed but locked; only a host can change them."""
 
     PAGE_SIZE = 4
 
@@ -780,29 +784,34 @@ class CharacterStatusEditor(discord.ui.View):
         self.bot = bot
         self.player = player
         self.characters = db.list_characters(bot.conn, player.id)
-        self.draft = {c["id"]: c["status"] for c in self.characters}
+        self.editable = [c for c in self.characters if c["status"] in PLAYER_CHARACTER_STATUSES]
+        self.draft = {c["id"]: c["status"] for c in self.editable}
         self.page = 0
         self._rebuild()
 
     @property
     def page_count(self) -> int:
-        return max(1, math.ceil(len(self.characters) / self.PAGE_SIZE))
+        return max(1, math.ceil(len(self.editable) / self.PAGE_SIZE))
 
     def page_characters(self):
         start = self.page * self.PAGE_SIZE
-        return self.characters[start : start + self.PAGE_SIZE]
+        return self.editable[start : start + self.PAGE_SIZE]
 
     def embed(self) -> discord.Embed:
         on_page = {c["id"] for c in self.page_characters()}
-        lines = [
-            f"{'▶ ' if c['id'] in on_page else ''}{CHARACTER_STATUS_INFO[self.draft[c['id']]][0]} "
-            f"**{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · {CHARACTER_STATUS_INFO[self.draft[c['id']]][1]}"
-            for c in self.characters
-        ]
+        lines = []
+        for c in self.characters:
+            if c["id"] in self.draft:
+                emoji, name, _ = CHARACTER_STATUS_INFO[self.draft[c["id"]]]
+                marker = "▶ " if c["id"] in on_page else ""
+                lines.append(f"{marker}{emoji} **{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · {name}")
+            else:  # inactive: set by a host, not changeable here
+                lines.append(f"💤 **{c['ign']}** · {c['job'] or '?'} · {c['buff'] or '?'} · Inactive (set by a host)")
         embed = discord.Embed(
             title="Your character status",
             description="Tell the hosts which characters to slot:\n"
-            "⭐ **Static**: prioritize · ⏳ **Sub**: only if needed · 💤 **Inactive**: don't slot\n\n"
+            "⭐ **Static**: prioritize · ⏳ **Flex**: only if needed\n"
+            "💤 **Inactive** characters are set by a host; ask a host to change them.\n\n"
             + "\n".join(lines),
             color=EMBED_COLOR,
         )
@@ -830,6 +839,11 @@ class CharacterStatusEditor(discord.ui.View):
                 "You don't have any characters yet. Ask a host to add them.", ephemeral=True
             )
             return
+        if not self.editable:
+            await interaction.response.send_message(
+                "All your characters are marked 💤 Inactive by a host. Ask a host to change them.", ephemeral=True
+            )
+            return
         await interaction.response.send_message(embed=self.embed(), view=self, ephemeral=True)
 
     async def refresh(self, interaction: discord.Interaction) -> None:
@@ -849,9 +863,11 @@ class CharacterStatusEditor(discord.ui.View):
         await interaction.response.edit_message(content="Cancelled. Nothing was changed.", embed=None, view=None)
 
     async def _save(self, interaction: discord.Interaction) -> None:
+        # players may only set static/sub; inactive characters aren't in the draft
+        assert all(v in PLAYER_CHARACTER_STATUSES for v in self.draft.values())
         db.set_character_statuses(self.bot.conn, self.player.id, self.draft, changed_by=interaction.user.id)
         self.stop()
-        counts = {s: sum(1 for v in self.draft.values() if v == s) for s in db.CHARACTER_STATUSES}
+        counts = {s: sum(1 for v in self.draft.values() if v == s) for s in PLAYER_CHARACTER_STATUSES}
         summary = " · ".join(f"{character_status_label(s)}: {n}" for s, n in counts.items())
         await interaction.response.edit_message(
             content=f"✅ Saved your character status. {summary}", embed=self.embed(), view=None
@@ -943,6 +959,7 @@ class CharacterStatusSelect(discord.ui.Select):
                 default=status == current,
             )
             for status, (emoji, name, help_text) in CHARACTER_STATUS_INFO.items()
+            if status in PLAYER_CHARACTER_STATUSES
         ]
         super().__init__(options=options, row=row)
         self.character_id = character["id"]

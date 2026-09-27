@@ -48,7 +48,7 @@ STATUS_CHOICES = [
 BUFF_CHOICES = [app_commands.Choice(name=b, value=b) for b in db.BUFFS]
 CHARACTER_STATUS_CHOICES = [
     app_commands.Choice(name="Static (prioritize)", value="static"),
-    app_commands.Choice(name="Sub (only if needed)", value="sub"),
+    app_commands.Choice(name="Flex (only if needed)", value="sub"),
     app_commands.Choice(name="Inactive (don't slot)", value="inactive"),
 ]
 STATUS_CHANGE_DAYS = 7  # how far back /host status lists character status changes

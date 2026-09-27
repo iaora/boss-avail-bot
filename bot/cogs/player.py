@@ -73,7 +73,7 @@ class CqCog(PlayerCommands, commands.GroupCog, group_name="cq", group_descriptio
             description="\n".join(lines)[:4000] or "*No characters yet. Ask a host to add them.*",
             color=EMBED_COLOR,
         )
-        embed.set_footer(text="⭐ Static: prioritize · ⏳ Sub: only if needed · 💤 Inactive: don't slot")
+        embed.set_footer(text="⭐ Static: prioritize · ⏳ Flex: only if needed · 💤 Inactive: set by a host, not slotted")
         view = discord.ui.View(timeout=900)
         if chars:
             button = discord.ui.Button(label="Set character status", style=discord.ButtonStyle.primary, emoji="⭐")

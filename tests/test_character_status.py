@@ -131,3 +131,31 @@ def test_breakdown_view_buttons_and_squad_picker(bot):
     i = interaction()
     asyncio.run(view._show_overview(i))
     assert i.response.edits[-1]["embed"].title == "Overview" and view.squad is None
+
+
+def test_players_choose_only_static_or_sub(bot):
+    alice = db.get_player_by_handle(bot.conn, "@alice")  # AliceMain static, AliceAlt sub, AliceOld inactive
+    editor = CharacterStatusEditor(bot, alice)
+    options = [[o.value for o in c.options] for c in editor.children if isinstance(c, discord.ui.Select)]
+    assert options and all(values == ["static", "sub"] for values in options)  # no Inactive choice
+
+    # the host-set inactive character is shown but locked
+    assert db.get_character(bot.conn, "AliceOld")["id"] not in editor.draft
+    assert "💤 **AliceOld** · DRK · HB · Inactive (set by a host)" in editor.embed().description
+    asyncio.run(editor._save(interaction(user_id=1)))
+    assert db.get_character(bot.conn, "AliceOld")["status"] == "inactive"  # untouched by the player
+
+
+def test_only_hosts_set_inactive_and_all_inactive_player_is_told(bot):
+    bob = db.get_player_by_handle(bot.conn, "@bob")  # BobSub is his only character
+    bob_sub = db.get_character(bot.conn, "BobSub")
+    db.update_character(bot.conn, bob_sub["id"], changed_by=999, status="inactive")  # what /character edit does
+    assert db.get_character(bot.conn, "BobSub")["status"] == "inactive"
+
+    class Response:
+        async def send_message(self, content=None, **kwargs):
+            self.content = content
+
+    i = SimpleNamespace(response=Response())
+    asyncio.run(CharacterStatusEditor(bot, bob).send(i))
+    assert "marked 💤 Inactive by a host" in i.response.content

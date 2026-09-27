@@ -110,8 +110,8 @@ There are just two commands, both under /cq. Everything else is a button on them
   /cq characters            List your characters (status, job, buff, damage, squad). Damage
                             is the average of your recent runs from the hosts' damage logs.
                             Buttons:
-                              Set character status    mark characters static, sub or
-                                                      inactive (see below)
+                              Set character status    mark characters static or flex
+                                                      (see below)
                               Character availability  same as in /cq availability: pick a
                                                       character and give it its own schedule
                               Damage history          pick a character to see its damage
@@ -121,12 +121,14 @@ There are just two commands, both under /cq. Everything else is a button on them
 Character status
   Each character is one of:
     ⭐ Static     Prioritize this character when slotting.
-    ⏳ Sub        Only slot this character if needed.
-    💤 Inactive   Don't slot this character. It's hidden from the hosts' squad lists.
-  Press "Set character status" in /cq characters. It opens an editor like the availability
-  one: a dropdown per character, 4 per page, ◀ ▶ to change page, then Save. Nothing
-  changes until you press Save.
-  Characters marked Perm on the roster sheet start as Static; the rest start as Sub.
+    ⏳ Flex       Only slot this character if needed.
+    💤 Inactive   Not slotted, and hidden from the hosts' squad lists. Only a host can
+                  set this; ask a host if a character should be (or stop being) inactive.
+  Press "Set character status" in /cq characters to choose Static or Flex for each
+  character. It opens an editor like the availability one: a dropdown per character,
+  4 per page, ◀ ▶ to change page, then Save. Nothing changes until you press Save.
+  Inactive characters are shown there but can't be changed.
+  Characters marked Perm on the roster sheet start as Static; the rest start as Flex.
 
 Squad order
   Every list of squads starts in time order (the order they run in the week). Press 🔀

@@ -81,7 +81,7 @@ def test_status_lists_character_status_changes(tmp_path):
     field = next(f for f in embed.fields if f.name.startswith("🔄 Character status changes"))
     assert field.value.strip().split("\n") == [
         "• **Alice**: Ace (NL) ⭐ Static → 💤 Inactive",      # before the first change, after the last
-        "• **Bob**: Bolt (NL) ⭐ Static → ⏳ Sub *(by host)*",
+        "• **Bob**: Bolt (NL) ⭐ Static → ⏳ Flex *(by host)*",
     ]
     assert conn.execute("SELECT COUNT(*) FROM character_status_log").fetchone()[0] == 5  # every change is logged
 
