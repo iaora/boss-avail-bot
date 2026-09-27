@@ -69,11 +69,11 @@ def slot_key(when: datetime) -> str:
     return str(int(when.timestamp()))
 
 
-def load(conn: sqlite3.Connection, fallback_channel_id: int | None) -> ReminderSettings:
+def load(conn: sqlite3.Connection, fallback_channel_id: int | None, *, boss_id: int = db.CQ) -> ReminderSettings:
     def get(key: str) -> str:
-        return db.get_setting(conn, key, DEFAULTS.get(key))
+        return db.get_boss_setting(conn, key, DEFAULTS.get(key), boss_id=boss_id)
 
-    channel = db.get_setting(conn, "cq_channel_id")
+    channel = db.get_boss_setting(conn, "cq_channel_id", boss_id=boss_id)
     return ReminderSettings(
         enabled=get("reminder_enabled") == "1",
         channel_id=int(channel) if channel else fallback_channel_id,

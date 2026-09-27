@@ -17,7 +17,7 @@ MAX_LOG_BYTES = 1_000_000
 
 
 def logs_channel_id(bot: MonkeyBot) -> int | None:
-    configured = db.get_setting(bot.conn, "queen_logs_channel_id")
+    configured = db.get_boss_setting(bot.conn, "queen_logs_channel_id")  # Crimson Queen's log channel
     return int(configured) if configured else bot.config.queen_logs_channel_id
 
 

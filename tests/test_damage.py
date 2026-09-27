@@ -76,7 +76,7 @@ def test_average_of_recent_runs(conn):
         damage.record_log(conn, damage.parse_log(text, SYDNEY), message_id=100 + i)
     assert db.get_character(conn, "Alpha")["dmg"] == 3.0  # average of the latest 3: 2, 3, 4
 
-    db.set_setting(conn, "damage_average_runs", "2")
+    db.set_boss_setting(conn, "damage_average_runs", "2")  # a Crimson Queen setting
     damage.recompute_all(conn)
     assert db.get_character(conn, "Alpha")["dmg"] == 3.5
 

@@ -874,16 +874,17 @@ class CharacterStatusEditor(discord.ui.View):
         )
 
 
-def damage_history_embed(conn, char) -> discord.Embed:
-    """A character's current damage and last 15 logged runs (★ = counted in the average)."""
+def damage_history_embed(conn, char, *, boss_id: int = db.CQ) -> discord.Embed:
+    """A character's current damage for a boss and its last 15 logged runs (★ = counted in the average)."""
     runs = conn.execute(
         """
         SELECT l.started_at, l.finished_at, r.damage, r.normalized FROM damage_runs r
-        JOIN damage_logs l ON l.id = r.log_id WHERE r.character_id = ? ORDER BY l.started_at DESC LIMIT 15
+        JOIN damage_logs l ON l.id = r.log_id WHERE r.character_id = ? AND l.boss_id = ?
+        ORDER BY l.started_at DESC LIMIT 15
         """,
-        (char["id"],),
+        (char["id"], boss_id),
     ).fetchall()
-    averaged = damage.average_runs(conn)
+    averaged = damage.average_runs(conn, boss_id=boss_id)
     lines = [
         f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'], 'd')} · "
         f"{r['damage'] / 1e9:.2f}B in {(r['finished_at'] - r['started_at']) / 60:.1f} min → **{r['normalized']:.2f}**"

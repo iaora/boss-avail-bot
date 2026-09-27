@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 
 from . import db, timeutil
 
+BOSS = db.CQ  # the roster sheet and squad timings are Crimson Queen's
+
 log = logging.getLogger(__name__)
 
 SQUAD_COLUMN = re.compile(r"^Squad (\d+)$", re.IGNORECASE)
@@ -137,31 +139,37 @@ def import_roster(conn: sqlite3.Connection, csv_text: str) -> ImportResult:
             slot_status=cell(row, "status") or ("Slotted" if squad else "Available"),
             perm=1 if cell(row, "perm").upper() == "TRUE" else 0,
         )
-        existing = db.get_character(conn, ign)
+        existing = db.get_character(conn, ign, boss_id=BOSS)
         with conn:
             if existing:
-                conn.execute(
-                    "UPDATE characters SET player_id=:player_id, job=:job, buff=:buff, run_time=:run_time, "
-                    "squad=:squad, slot_status=:slot_status, perm=:perm, base_dmg=:dmg, "
-                    # damage from uploaded logs wins over the sheet
-                    "dmg = CASE WHEN EXISTS (SELECT 1 FROM damage_runs WHERE character_id = :id) THEN dmg ELSE :dmg END "
-                    "WHERE id=:id",
-                    {**values, "id": existing["id"]},
-                )
                 char_id = existing["id"]
+                conn.execute(
+                    "UPDATE characters SET player_id = :player_id, job = :job, buff = :buff WHERE id = :id",
+                    {**values, "id": char_id},
+                )
                 result.characters_updated += 1
             else:
-                cur = conn.execute(
-                    "INSERT INTO characters "
-                    "(player_id, ign, job, buff, dmg, base_dmg, run_time, squad, slot_status, perm, status) "
-                    "VALUES (:player_id, :ign, :job, :buff, :dmg, :dmg, :run_time, :squad, :slot_status, :perm, "
-                    # new characters start as static if the sheet marks them Perm, else sub;
-                    # after that the status belongs to the player and re-imports don't change it
-                    "CASE WHEN :perm = 1 THEN 'static' ELSE 'sub' END)",
+                char_id = conn.execute(
+                    "INSERT INTO characters (player_id, ign, job, buff) VALUES (:player_id, :ign, :job, :buff)",
                     {**values, "ign": ign},
-                )
-                char_id = cur.lastrowid
+                ).lastrowid
                 result.characters_created += 1
+            # The sheet is Crimson Queen's roster: its damage, squad, slot status and Perm are CQ data.
+            conn.execute(
+                "INSERT INTO character_boss "
+                "(character_id, boss_id, status, dmg, base_dmg, run_time, squad, slot_status, perm) "
+                # a character new to this boss starts as static if the sheet marks it Perm, else sub;
+                # after that the status belongs to the player and re-imports don't change it
+                "VALUES (:id, :boss, CASE WHEN :perm = 1 THEN 'static' ELSE 'sub' END, :dmg, :dmg, :run_time, "
+                ":squad, :slot_status, :perm) "
+                "ON CONFLICT (character_id, boss_id) DO UPDATE SET "
+                "run_time = excluded.run_time, squad = excluded.squad, slot_status = excluded.slot_status, "
+                "perm = excluded.perm, base_dmg = excluded.base_dmg, "
+                # damage from uploaded logs wins over the sheet
+                "dmg = CASE WHEN EXISTS (SELECT 1 FROM damage_runs r JOIN damage_logs l ON l.id = r.log_id "
+                "WHERE r.character_id = :id AND l.boss_id = :boss) THEN character_boss.dmg ELSE excluded.dmg END",
+                {**values, "id": char_id, "boss": BOSS},
+            )
 
         if player.id in new_player_ids:
             levels = {}
@@ -182,22 +190,30 @@ def import_roster(conn: sqlite3.Connection, csv_text: str) -> ImportResult:
 def _find_or_create_player(
     conn: sqlite3.Connection, discord: str, name: str, result: ImportResult, new_ids: set[int]
 ) -> db.Player:
+    """The sheet row's player. A player new to this boss's roster (new to the bot, or known only for
+    another boss) joins it as active and gets their default availability from the sheet."""
     m = MENTION.match(discord)
     if m:
         discord_id = int(m.group(1))
-        player = db.get_player_by_discord_id(conn, discord_id)
+        player = db.get_player_by_discord_id(conn, discord_id, boss_id=BOSS)
         if player is None:
-            player = db.create_player(conn, name=name, discord_id=discord_id)
+            player = db.create_player(conn, name=name, discord_id=discord_id, boss_id=BOSS)
             result.players_created += 1
             new_ids.add(player.id)
-        return player
-
-    handle = discord if discord.startswith("@") else f"@{discord}"
-    player = db.get_player_by_handle(conn, handle)
-    if player is None:
-        player = db.create_player(conn, name=name, discord_handle=handle)
-        result.players_created += 1
+    else:
+        handle = discord if discord.startswith("@") else f"@{discord}"
+        player = db.get_player_by_handle(conn, handle, boss_id=BOSS)
+        if player is None:
+            player = db.create_player(conn, name=name, discord_handle=handle, boss_id=BOSS)
+            result.players_created += 1
+            new_ids.add(player.id)
+    on_roster = conn.execute(
+        "SELECT 1 FROM player_boss WHERE player_id = ? AND boss_id = ?", (player.id, BOSS)
+    ).fetchone()
+    if not on_roster:
+        db.set_player_status(conn, player.id, "active", boss_id=BOSS)
         new_ids.add(player.id)
+        player = db.get_player(conn, player.id, boss_id=BOSS)
     return player
 
 
@@ -213,11 +229,11 @@ def _derive_default_availability(
     for pid, char_ids in by_player.items():
         squads = sorted({s for c in char_ids for s in char_levels[c]})
         default = {s: _mode_level([char_levels[c][s] for c in char_ids if s in char_levels[c]]) for s in squads}
-        db.set_default_availability(conn, pid, default)
+        db.set_default_availability(conn, pid, default, boss_id=BOSS)
         for c in char_ids:
             overrides = {s: lvl for s, lvl in char_levels[c].items() if default.get(s) != lvl}
             if overrides:
-                db.set_character_overrides(conn, c, overrides)
+                db.set_character_overrides(conn, c, overrides, boss_id=BOSS)
 
 
 def parse_squad_timings(text: str, tz: ZoneInfo) -> dict[int, tuple[int, str]]:
@@ -231,11 +247,11 @@ def parse_squad_timings(text: str, tz: ZoneInfo) -> dict[int, tuple[int, str]]:
 
 def seed_if_empty(conn: sqlite3.Connection, roster_csv: Path, squad_timings: Path, tz: ZoneInfo) -> None:
     """First-run bootstrap: load the squad template and roster if the database is empty."""
-    if conn.execute("SELECT COUNT(*) FROM squads").fetchone()[0] == 0:
+    if not db.squad_numbers(conn, boss_id=BOSS):
         if squad_timings.exists():
             template = parse_squad_timings(squad_timings.read_text(encoding="utf-8"), tz)
             for number, (weekday, hhmm) in template.items():
-                db.set_squad_template(conn, number, weekday, hhmm)
+                db.set_squad_template(conn, number, weekday, hhmm, boss_id=BOSS)
             log.info("Seeded %d squads from %s", len(template), squad_timings)
         else:
             log.warning("No squads configured and %s not found; hosts can add squads with /config squad_time (permanent: True)", squad_timings)

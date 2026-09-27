@@ -22,7 +22,7 @@ def mark_latest_due_as_sent(bot: MonkeyBot) -> None:
     week = timeutil.upcoming_week_start(now, bot.tz)
     settings = reminders.load(bot.conn, bot.config.cq_channel_id)
     due = settings.latest_due(week, now, bot.tz)
-    db.set_setting(bot.conn, LAST_SLOT, reminders.slot_key(due) if due else "")
+    db.set_boss_setting(bot.conn, LAST_SLOT, reminders.slot_key(due) if due else "")
 
 
 class ReminderCog(commands.Cog):
@@ -43,7 +43,7 @@ class ReminderCog(commands.Cog):
         now = timeutil.now_utc()
         week = timeutil.upcoming_week_start(now, self.bot.tz)
         due = settings.latest_due(week, now, self.bot.tz)
-        if due is None or db.get_setting(conn, LAST_SLOT) == reminders.slot_key(due):
+        if due is None or db.get_boss_setting(conn, LAST_SLOT) == reminders.slot_key(due):
             return
 
         channel = self.bot.get_channel(settings.channel_id)
@@ -51,7 +51,7 @@ class ReminderCog(commands.Cog):
             log.warning("Reminder channel %s not found or not a text channel", settings.channel_id)
             return
         await send_reminder(self.bot, channel, week)
-        db.set_setting(conn, LAST_SLOT, reminders.slot_key(due))
+        db.set_boss_setting(conn, LAST_SLOT, reminders.slot_key(due))
         log.info("Posted availability reminder for %s (slot %s)", week, due)
 
     @check_reminder.before_loop
@@ -60,7 +60,7 @@ class ReminderCog(commands.Cog):
         # On a fresh install, don't post a reminder whose time passed before the bot existed;
         # start with the next one. After that, if the bot was down when a reminder was due,
         # the most recent missed one is posted as soon as it comes back up.
-        if db.get_setting(self.bot.conn, LAST_SLOT) is None:
+        if db.get_boss_setting(self.bot.conn, LAST_SLOT) is None:
             mark_latest_due_as_sent(self.bot)
 
     @check_reminder.error
