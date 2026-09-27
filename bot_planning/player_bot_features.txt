@@ -1,0 +1,14 @@
+1. Weekly reminder to submit availability in CQ channel  
+    - Button options for players in the reminder message 
+        - View their default availability schedule
+        - Confirm “No change” or
+        - “Update this week”
+2. Players submit their availability
+    - Players are given all squad options (discord timestamp and squad number) and a respective drop-down of the options below: Yes, Yes (if need), Maybe, No
+    - Players can submit different levels of commitment to a run 
+        - Yes – 100% can make it 
+        - Yes (if need) – only in emergencies 
+        - Maybe – 50% chance can make it 
+        - No - cannot make it 
+3. Display default player availability 
+4. Update default player availability 
