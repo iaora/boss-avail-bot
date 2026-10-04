@@ -230,7 +230,7 @@ The bot automatically posts the reminder (with the View my availability / No cha
 this week buttons) in the CQ channel for the upcoming week. By default it posts twice:
 Wednesday and Friday at 18:00 (bot timezone).
 
-The reminder @mentions the player role set in PLAYER_ROLE_ID (in .env). This includes
+The reminder @mentions the player role set in PLAYER_ROLE_ID (in .env.prod). This includes
 reminders posted with /host remind_now. Leave PLAYER_ROLE_ID empty for no ping. The role
 must allow @mentions (Server Settings > Roles > "Allow anyone to @mention this role"),
 otherwise the mention shows but nobody is notified.

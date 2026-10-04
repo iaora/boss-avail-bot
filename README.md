@@ -11,16 +11,27 @@ availability, and manage squad times and reminders.
 
 Requires Python 3.11+.
 
+There are two bots, each a separate Discord application with its own settings file:
+
+| Environment | Settings | Discord bot and server | Database | Run |
+|---|---|---|---|---|
+| **prod** | `.env.prod` | Monkey Inc, in the official server | `data/monkey_inc.db` | `.venv/bin/python -m bot prod` |
+| **test** | `.env.test` | a test bot, in a test server | `data/test/monkey_inc.db` | `.venv/bin/python -m bot test` |
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-cp .env.example .env        # then fill in DISCORD_TOKEN, GUILD_ID, HOST_ROLE_ID
-.venv/bin/python -m bot
+cp .env.example .env.prod   # fill in the production bot's token and the official server's IDs
+cp .env.example .env.test   # fill in the test bot's token and the test server's IDs
+.venv/bin/python -m bot test
 ```
 
-On first start, the bot creates `data/monkey_inc.db` and fills it from
+On first start, each environment creates its database and fills it from
 `bot_data/squad_timings.txt` and `bot_data/Monkey, Inc.  - CQ Roster.csv`. No manual
-database setup is needed. To start over, stop the bot and delete `data/`.
+database setup is needed. To start the test data over, stop the test bot and delete `data/test/`.
+
+> **Upgrading from v3** (a single `.env`): your `.env` is the production bot, so rename it with
+> `mv .env .env.prod`. The production database stays where it is.
 
 > **`bot_data/` is git-ignored** because the roster contains players' Discord handles and
 > IDs. It never goes to GitHub. Keep your copy locally. Without it, the bot starts with an
@@ -28,12 +39,10 @@ database setup is needed. To start over, stop the bot and delete `data/`.
 > `/config squad_time ... permanent:True`. The seed-based tests are skipped when the files
 > are missing.
 
-Run the tests with `.venv/bin/python -m pytest`.
-
 ### Discord application setup (one time)
 
 1. In https://discord.com/developers/applications, create an application, then open
-   **Bot** and **Reset Token**. Put the token in `.env` as `DISCORD_TOKEN`.
+   **Bot** and **Reset Token**. Put the token in `.env.prod` (or `.env.test` for the test bot) as `DISCORD_TOKEN`.
 2. Still on the **Bot** page, under **Privileged Gateway Intents**, turn on **Message Content
    Intent**. The bot needs it to read damage log files posted in #queen-logs. If it's
    off, the bot fails to start with a `PrivilegedIntentsRequired` error.
@@ -57,60 +66,63 @@ Run the tests with `.venv/bin/python -m pytest`.
 
 ## Development vs production bots
 
-Use a **separate test bot and test server** for trying out changes, so the bot in the official
-server (production) is never affected.
+Use the **test bot in a test server** for trying out changes, so the bot in the official server
+(production) is never affected.
 
-Don't run the production bot's token in two places. If two programs log in with the same token,
-both answer every button press, and players get "interaction failed" or duplicate replies. The two
-servers would also share one database, so test clicks would change real players' data.
+The bot keeps the two apart for you:
+- **Settings:** `python -m bot prod` reads only `.env.prod`, and `python -m bot test` reads only
+  `.env.test`.
+- **Tokens:** it refuses to start if both files have the same `DISCORD_TOKEN`. If two programs log
+  in with the same token, both answer every button press, and players get "interaction failed"
+  or duplicate replies.
+- **Databases:** each environment has its own database, and the bot refuses to start if both
+  files point `DATABASE_PATH` at the same one. Test clicks never change real players' data.
+- **One copy each:** starting an environment that's already running fails with "the prod bot is
+  already running".
+
+Both bots can run at the same time, in two terminals.
+
+**One-time setup of the test bot:**
 
 1. **Create a second Discord application** (e.g. "Monkey Inc Test") in the Developer Portal and
    follow the one-time setup above:
    - reset and copy its token,
    - turn on Message Content Intent,
    - invite it to your **test server** with the same scopes and permissions.
-2. **Make a second working copy** of the repo with a git worktree (a second folder on the same
-   repository, checked out at whichever branch you want to test):
-   ```bash
-   cd ~/Projects/boss-avail-bot
-   git worktree add ../boss-avail-bot-test <branch-to-test>
-   cd ../boss-avail-bot-test
-   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-   ln -s ../boss-avail-bot/bot_data bot_data   # reuse the roster CSV, squad timings and class icons
-   cp ../boss-avail-bot/.env .env
-   ```
-3. **Point the test copy's `.env` at the test server:**
+2. **Fill in `.env.test`:**
    - `DISCORD_TOKEN` is the **test bot's** token.
    - `GUILD_ID`, `HOST_ROLE_ID`, `PLAYER_ROLE_ID`, `CQ_CHANNEL_ID` and `QUEEN_LOGS_CHANNEL_ID` are
      the test server's IDs. Every server has its own.
-   - `DATABASE_PATH` can stay `data/monkey_inc.db`. It's relative to this folder, so the test bot
-     gets its own database.
-4. **Choose the test data**, before the first start:
+   - Leave `DATABASE_PATH` empty.
+3. **Choose the test data**, before the first start:
    - **Fresh:** do nothing. The database is built from `bot_data/`.
-   - **A copy of production:**
-     `mkdir -p data && cp ../boss-avail-bot/data/backups/<latest>.db data/monkey_inc.db`.
-     Changes in the test server never touch the production database.
-5. **Run it** from the test folder: `.venv/bin/python -m bot`. Production keeps running from its own
-   folder.
+   - **A copy of production:** `.venv/bin/python -m bot.backup prod`, then
+     `mkdir -p data/test && cp data/backups/<newest>.db data/test/monkey_inc.db`.
+4. **Run it:** `.venv/bin/python -m bot test`.
 
 Notes:
-- Class icons are per bot, so the test bot uploads its own set from `bot_data/class_icons/` on
-  startup.
+- Both bots use the same class icons: the images in `bot_data/class_icons/`. Discord stores icons
+  per bot, so each bot uploads its own copy of that folder at startup and re-checks it every
+  10 minutes. Add or replace an image once, and both bots pick it up.
 - To use the player commands in the test server, your Discord username must be on the roster, or
   add yourself there with `/player add`.
-- To test another branch: `git checkout <branch>` in the test folder, then restart the test bot.
-  To remove the test copy: `git worktree remove ../boss-avail-bot-test`.
-- Each folder's `.env` and `data/` are git-ignored, so neither is ever committed.
+- One folder is enough. Both bots run the code checked out in this folder, and a running bot
+  keeps the code it started with, so switching branches only affects a bot when you restart it.
+  To try a branch: `git checkout <branch>`, then restart the **test** bot.
+- **Restart the prod bot only with `main` checked out.** Otherwise it runs unmerged code with real
+  players, and if the branch changes the database schema, that change is applied to the real
+  database and can't be undone.
+- `.env.prod`, `.env.test` and `data/` are git-ignored, so they're never committed.
 
 ## Deploy to EC2
 
-The app is self-contained: the code, a `.env` file, and a `data/` folder holding the SQLite
+The app is self-contained: the code, a `.env.prod` file, and a `data/` folder holding the SQLite
 database.
 
 **Automatic (new instance):** launch Amazon Linux 2023 with
 [deploy/ec2-user-data.sh](deploy/ec2-user-data.sh) as the User data. Edit `REPO_URL` first,
-and store your `.env` contents in SSM Parameter Store as the SecureString
-`/monkey-inc/env`. The instance clones the repo, writes `.env`, and installs and starts the
+and store your `.env.prod` contents in SSM Parameter Store as the SecureString
+`/monkey-inc/env`. The instance clones the repo, writes `.env.prod`, and installs and starts the
 service. To seed the database, upload `bot_data/` to a **private** S3 folder and set
 `SEED_S3_URI` in the script. Or copy your existing database instead (see below).
 
@@ -118,7 +130,7 @@ service. To seed the database, upload `bot_data/` to a **private** S3 folder and
 
 ```bash
 git clone <repo> ~/boss-avail-bot && cd ~/boss-avail-bot
-cp .env.example .env && nano .env
+cp .env.example .env.prod && nano .env.prod
 # optional seed data, from your machine:
 #   scp -r bot_data ec2-user@<host>:~/boss-avail-bot/
 ./deploy/install.sh
@@ -136,13 +148,13 @@ on the new machine, then start the service. Schema upgrades run automatically at
 
 ## Taking the bot down
 
-Back up first if you might want the data again: `.venv/bin/python -m bot.backup` writes a
+Back up first if you might want the data again: `.venv/bin/python -m bot.backup prod` writes a
 copy to `data/backups/`. Copy that file somewhere safe **outside** the project folder.
 
 ### Local (your Mac)
 
-1. **Stop the bot:** press `Ctrl+C` in the terminal where `python -m bot` is running.
-   If you can't find that terminal: `pkill -f "python -m bot"`.
+1. **Stop the bot:** press `Ctrl+C` in the terminal where `python -m bot prod` (or `test`) is running.
+   If you can't find that terminal: `pkill -f "python -m bot prod"`.
 2. **Leave the virtualenv** (only if you ran `source .venv/bin/activate`): `deactivate`
 3. **Delete the database** (all players, availability and settings): `rm -rf data/`
    The next start creates a fresh one from `bot_data/`.
@@ -156,7 +168,7 @@ sudo systemctl disable monkey-inc                       # don't start on boot
 sudo rm /etc/systemd/system/monkey-inc.service && sudo systemctl daemon-reload
 crontab -l | grep -v 'bot.backup' | crontab -           # remove the nightly backup job
 rm -rf ~/boss-avail-bot/data                            # delete the database + backups
-rm -rf ~/boss-avail-bot                                 # delete everything (code, .venv, .env)
+rm -rf ~/boss-avail-bot                                 # delete everything (code, .venv, .env.prod)
 ```
 
 (If you used `ec2-user-data.sh`, the app lives in `/opt/monkey-inc` instead of `~/boss-avail-bot`.)
@@ -179,15 +191,15 @@ the `/monkey-inc/env` parameter in SSM Parameter Store and any seed files in S3.
 
 ```
 bot/
-  __main__.py      entry point (python -m bot)
-  config.py        .env / environment settings
+  __main__.py      entry point (python -m bot prod|test)
+  config.py        prod/test environments (.env.prod, .env.test) and settings
   app.py           bot class, command sync, player linking, host check
   db.py            SQLite schema (auto-migrating) and queries
   importer.py      roster CSV + squad timings import, first-run seeding
   reminders.py     reminder/deadline settings
   timeutil.py      week/timezone helpers
   views.py         embeds, reminder buttons, availability editor
-  backup.py        python -m bot.backup
+  backup.py        python -m bot.backup prod|test
   cogs/player.py   player commands
   cogs/host.py     host-only commands: /host, /config, /player, /character
   cogs/reminder.py weekly reminder scheduler

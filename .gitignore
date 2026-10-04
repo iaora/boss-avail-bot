@@ -442,3 +442,7 @@ data/
 .DS_Store
 # Roster data contains players' Discord handles/IDs -- never publish it
 bot_data/
+# Bot settings per environment (.env.prod, .env.test) hold the Discord tokens -- never commit them
+.env
+.env.*
+!.env.example

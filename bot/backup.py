@@ -1,4 +1,4 @@
-"""Make a consistent copy of the database: `python -m bot.backup [keep]`.
+"""Make a consistent copy of an environment's database: `python -m bot.backup prod [keep]`.
 
 Uses SQLite's online backup API, so it is safe to run while the bot is running.
 Backups go to data/backups/ next to the database; only the newest `keep` (default 14) are kept.
@@ -10,7 +10,7 @@ import sqlite3
 import sys
 from datetime import datetime
 
-from .config import Config
+from .config import ENVIRONMENTS, Config, load_environment
 
 
 def backup(keep: int = 14) -> str:
@@ -31,4 +31,7 @@ def backup(keep: int = 14) -> str:
 
 
 if __name__ == "__main__":
-    print(backup(int(sys.argv[1]) if len(sys.argv) > 1 else 14))
+    if len(sys.argv) < 2 or sys.argv[1] not in ENVIRONMENTS:
+        raise SystemExit(f"Usage: python -m bot.backup {{{'|'.join(ENVIRONMENTS)}}} [keep]")
+    load_environment(sys.argv[1])
+    print(backup(int(sys.argv[2]) if len(sys.argv) > 2 else 14))
