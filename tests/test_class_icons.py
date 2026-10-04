@@ -11,7 +11,7 @@ from bot import db
 from bot.app import MonkeyBot
 from bot.class_icons import ClassIcons, emoji_name, normalize_job
 from bot.config import Config
-from bot.squad_breakdown import SquadBreakdownView
+from bot.squad_breakdown import PrepRosterView, SquadBreakdownView
 
 WEEK = date(2026, 9, 27)
 
@@ -146,7 +146,7 @@ def bot(tmp_path):
                         ("bob", [("BobSub", "BM", "sub")])]:
         p = db.create_player(bot.conn, name=name, discord_handle=f"@{name.lower()}")
         for ign, job, status in chars:
-            db.add_character(bot.conn, p.id, ign, job, "DPS", 3.0, status)
+            db.add_character(bot.conn, p.id, ign, job, 3.0, status)
         db.set_default_availability(bot.conn, p.id, {1: "Preferred"})
     yield bot
     bot.conn.close()
@@ -170,9 +170,8 @@ def test_squad_detail_pages_instead_of_truncating(bot, monkeypatch):
     import bot.squad_breakdown as breakdown
 
     monkeypatch.setattr(breakdown, "PAGE_MAX_CHARS", 40)  # force one player per page
-    view = SquadBreakdownView(bot, WEEK, db.list_players(bot.conn, ("active",)), discord.Embed(title="o"))
+    view = PrepRosterView(bot, WEEK, db.list_players(bot.conn, ("active",)))
     view.squad, view.level, view.view_mode = 1, "Preferred", "player"
-    view.showing_overview = False
     view._build()
     labels = [c.label for c in view.children if isinstance(c, discord.ui.Button)]
     assert labels[-3:] == ["◀", "▶", "Group by class"]
@@ -204,12 +203,11 @@ def test_player_view_order_and_class_view(tmp_path):
         (kim, "kilo", "DRK", "sub"),
         (kim, "Lima", "BM", "static"),
     ]:
-        db.add_character(bot.conn, player.id, ign, job, "DPS", 3.0, status)
+        db.add_character(bot.conn, player.id, ign, job, 3.0, status)
         db.set_default_availability(bot.conn, player.id, {1: "Preferred"})
-    view = SquadBreakdownView(bot, WEEK, [pat, kim], discord.Embed(title="o"))
+    view = PrepRosterView(bot, WEEK, [pat, kim])
     assert view.view_mode == "class"  # the default
     view.squad, view.level, view.view_mode = 1, "Preferred", "player"
-    view.showing_overview = False
 
     def lines():
         return view.current_embed().fields[0].value.strip().split("\n")
@@ -251,7 +249,7 @@ def test_class_view_shows_icon_and_splits_long_classes(tmp_path):
     players = []
     for i in range(250):
         p = db.create_player(bot.conn, name=f"Player{i:03d}", discord_handle=f"@p{i}")
-        db.add_character(bot.conn, p.id, f"Bishop{i:03d}", "BSP", "HSH", 2.0, "static")
+        db.add_character(bot.conn, p.id, f"Bishop{i:03d}", "BSP", 2.0, "static")
         db.set_default_availability(bot.conn, p.id, {1: "Preferred"})
         players.append(p)
     view = SquadBreakdownView(bot, WEEK, players, discord.Embed(title="o"))
@@ -292,7 +290,7 @@ def test_class_view_orders_by_status_then_damage(tmp_path):
     p = db.create_player(bot.conn, name="Pat", discord_handle="@pat")
     for ign, dmg, status in [("low", 2.1, "static"), ("high", 4.39, "static"), ("none", None, "static"),
                              ("subtop", 6.0, "sub"), ("mid", 3.5, "static"), ("sublow", 1.0, "sub")]:
-        db.add_character(bot.conn, p.id, ign, "DRK", "HB", dmg, status)
+        db.add_character(bot.conn, p.id, ign, "DRK", dmg, status)
     db.set_default_availability(bot.conn, p.id, {1: "Preferred"})
     view = SquadBreakdownView(bot, WEEK, [p], discord.Embed(title="o"))
     view.squad, view.level = 1, "Preferred"

@@ -1,4 +1,5 @@
-"""Host view behind /host availability: who is Preferred / Available for each squad.
+"""Host views behind /cq_host: Availability (who is Preferred / Available for each squad, by name)
+and Prep Roster (one squad's characters at a level, for slotting).
 
 Availability is worked out per character (the player's weekly change or default, plus that
 character's own overrides). Characters the player marked inactive are left out; static
@@ -230,13 +231,13 @@ def _fit(items: list[str], limit: int) -> str:
     return ", ".join(shown)
 
 
-ALL_SQUADS = "all"
-
-
 class SquadBreakdownView(discord.ui.View):
-    """🟢 / 🟡 buttons pick the level; the dropdown picks one squad (details) or all squads (names).
+    """/cq_host > Availability: 📋 Overview (counts per squad), then 🟢 / 🟡 for every squad's players
+    at that level (names). One squad's characters are in PrepRosterView, which shares the data and
+    the squad detail embeds below.
 
-    State: `level` (Preferred/Available) and `squad` (a squad number, or None for all squads).
+    State: `level` (Preferred/Available) and `squad` (a squad number, or None for all squads; only
+    PrepRosterView picks one).
     """
 
     def __init__(
@@ -264,65 +265,30 @@ class SquadBreakdownView(discord.ui.View):
         self.view_mode = "class"  # squad detail grouped by "class" (default) or by "player"
         self._build()
 
-    def _build(self) -> None:
-        self.clear_items()
-        options = [
-            discord.SelectOption(
-                label="All squads",
-                value=ALL_SQUADS,
-                description="Who is Preferred / Available for every squad (names only)",
-                emoji="🗂️",
-                default=self.squad is None,
-            )
-        ] + [
-            discord.SelectOption(
-                label=f"Squad {s.number} · {timeutil.local_label(s.starts_at, self.tz, with_zone=True, twelve_hour=True)}",
-                value=str(s.number),
-                description=(
-                    f"🟢 {len(self.data[s.number]['Preferred'])} preferred · "
-                    f"🟡 {len(self.data[s.number]['Available'])} available"
-                ),
-                default=self.squad == s.number,
-            )
-            for s in self.squads[:24]
-        ]
-        select = discord.ui.Select(placeholder="Pick a squad to see players' characters…", options=options, row=0)
-        select.callback = self._pick_squad
-        self.add_item(select)
-        # Overview, Preferred, Available. The button for what's on screen is filled blue so it reads as
-        # the selected tab; the others are grey.
-        def style(selected: bool) -> discord.ButtonStyle:
-            return discord.ButtonStyle.primary if selected else discord.ButtonStyle.secondary
+    @staticmethod
+    def _style(selected: bool) -> discord.ButtonStyle:
+        # The button for what's on screen is filled blue so it reads as the selected tab; the others are grey.
+        return discord.ButtonStyle.primary if selected else discord.ButtonStyle.secondary
 
-        overview = discord.ui.Button(label="Overview", emoji="📋", style=style(self.showing_overview), row=1)
-        overview.callback = self._show_overview
-        self.add_item(overview)
+    def _add_level_buttons(self, row: int) -> None:
         for level in ("Preferred", "Available"):
             selected = not self.showing_overview and self.level == level
-            button = discord.ui.Button(label=level, emoji=LEVEL_EMOJI[level], style=style(selected), row=1)
+            button = discord.ui.Button(label=level, emoji=LEVEL_EMOJI[level], style=self._style(selected), row=row)
             button.callback = self._level_callback(level)
             self.add_item(button)
-        if self.squad is not None:
-            page_count = len(self.detail_pages(self.squad, self.level))
-            if page_count > 1:
-                for label, step, disabled in [("◀", -1, self.page == 0), ("▶", 1, self.page >= page_count - 1)]:
-                    button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=1, disabled=disabled)
-                    button.callback = self._page_callback(step)
-                    self.add_item(button)
-        if self.squad is None:  # overview / all squads: squads are listed, so they can be re-sorted
-            sort = discord.ui.Button(
-                label=order_button_label(other_order(self.order)), emoji="🔀",
-                style=discord.ButtonStyle.secondary, row=2,
-            )
-            sort.callback = self._toggle_order
-            self.add_item(sort)
-        else:
-            other = "class" if self.view_mode == "player" else "player"
-            toggle = discord.ui.Button(
-                label=f"Group by {other}", emoji="🔀", style=discord.ButtonStyle.secondary, row=2
-            )
-            toggle.callback = self._toggle_view_mode
-            self.add_item(toggle)
+
+    def _build(self) -> None:
+        """Overview, Preferred, Available, and the 🔀 squad order toggle."""
+        self.clear_items()
+        overview = discord.ui.Button(label="Overview", emoji="📋", style=self._style(self.showing_overview), row=0)
+        overview.callback = self._show_overview
+        self.add_item(overview)
+        self._add_level_buttons(row=0)
+        sort = discord.ui.Button(
+            label=order_button_label(other_order(self.order)), emoji="🔀", style=discord.ButtonStyle.secondary, row=1
+        )
+        sort.callback = self._toggle_order
+        self.add_item(sort)
 
     def current_embed(self) -> discord.Embed:
         if self.showing_overview:
@@ -338,7 +304,7 @@ class SquadBreakdownView(discord.ui.View):
         embed = discord.Embed(
             title=f"{LEVEL_EMOJI[level]} {level} players per squad: {timeutil.week_label(self.week)}",
             description="⏳ = the player has no static character at this level, only ⏳ Flex ones; "
-            "they're listed after players with a static character. Pick a squad below to see their characters.",
+            "they're listed after players with a static character. Prep Roster in /cq_host shows their characters.",
             color=EMBED_COLOR,
         )
         per_field = min(1024, EMBED_BUDGET // max(1, len(self.squads)))
@@ -408,13 +374,6 @@ class SquadBreakdownView(discord.ui.View):
         self._build()
         await interaction.response.edit_message(embed=embed or self.current_embed(), view=self)
 
-    async def _pick_squad(self, interaction: discord.Interaction) -> None:
-        value = interaction.data["values"][0]
-        self.squad = None if value == ALL_SQUADS else int(value)
-        self.page = 0
-        self.showing_overview = False
-        await self._refresh(interaction)
-
     def _level_callback(self, level: str):
         async def callback(interaction: discord.Interaction) -> None:
             self.level = level
@@ -430,6 +389,74 @@ class SquadBreakdownView(discord.ui.View):
         self.squads = order_squads(self.squads, self.order)
         await self._refresh(interaction)
 
+    async def _show_overview(self, interaction: discord.Interaction) -> None:
+        self.squad = None
+        self.page = 0
+        self.showing_overview = True
+        await self._refresh(interaction)
+
+
+class PrepRosterView(SquadBreakdownView):
+    """/cq_host > Prep Roster: one squad's characters at a level, for slotting. The dropdown picks the
+    squad, 🟢 / 🟡 the level; ◀ ▶ page through long squads and 🔀 groups by class or by player.
+    Opens on the first squad (in the host's squad order)."""
+
+    def __init__(self, bot: "MonkeyBot", week: date, players: list[db.Player], user_id: int | None = None):
+        super().__init__(bot, week, players, overview=None, user_id=user_id)
+        self.showing_overview = False
+        self.squad = self.squads[0].number if self.squads else None
+        self._build()
+
+    def current_embed(self) -> discord.Embed:
+        if self.squad is None:
+            return discord.Embed(
+                title=f"Prep roster: {timeutil.week_label(self.week)}", description="*No squads configured.*",
+                color=EMBED_COLOR,
+            )
+        return self.squad_embed(self.squad, self.level, self.page)
+
+    def _build(self) -> None:
+        self.clear_items()
+        if self.squad is None:
+            return
+        select = discord.ui.Select(
+            placeholder="Pick a squad…",
+            options=[
+                discord.SelectOption(
+                    label=f"Squad {s.number} · "
+                    f"{timeutil.local_label(s.starts_at, self.tz, with_zone=True, twelve_hour=True)}",
+                    value=str(s.number),
+                    description=(
+                        f"🟢 {len(self.data[s.number]['Preferred'])} preferred · "
+                        f"🟡 {len(self.data[s.number]['Available'])} available"
+                    ),
+                    default=self.squad == s.number,
+                )
+                for s in self.squads[:25]
+            ],
+            row=0,
+        )
+        select.callback = self._pick_squad
+        self.add_item(select)
+        self._add_level_buttons(row=1)
+        page_count = len(self.detail_pages(self.squad, self.level))
+        if page_count > 1:
+            for label, step, disabled in [("◀", -1, self.page == 0), ("▶", 1, self.page >= page_count - 1)]:
+                button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=1, disabled=disabled)
+                button.callback = self._page_callback(step)
+                self.add_item(button)
+        other = "class" if self.view_mode == "player" else "player"
+        toggle = discord.ui.Button(label=f"Group by {other}", emoji="🔀", style=discord.ButtonStyle.secondary, row=2)
+        toggle.callback = self._toggle_view_mode
+        self.add_item(toggle)
+
+    # ------------------------------------------------------------------ callbacks
+
+    async def _pick_squad(self, interaction: discord.Interaction) -> None:
+        self.squad = int(interaction.data["values"][0])
+        self.page = 0
+        await self._refresh(interaction)
+
     async def _toggle_view_mode(self, interaction: discord.Interaction) -> None:
         self.view_mode = "class" if self.view_mode == "player" else "player"
         self.page = 0
@@ -441,9 +468,3 @@ class SquadBreakdownView(discord.ui.View):
             await self._refresh(interaction)
 
         return callback
-
-    async def _show_overview(self, interaction: discord.Interaction) -> None:
-        self.squad = None
-        self.page = 0
-        self.showing_overview = True
-        await self._refresh(interaction)

@@ -82,13 +82,13 @@ def test_summary_toggle_button(bot):
 
 def test_squad_order_is_remembered_across_every_view(bot):
     """Switching order anywhere switches it everywhere, for that Discord user only."""
-    from bot.squad_breakdown import SquadBreakdownView
+    from bot.squad_breakdown import PrepRosterView, SquadBreakdownView
     from bot.views import OrderToggleView, SquadTimesButton, get_squad_order, squad_times_embed
 
     player = db.get_player_by_discord_id(bot.conn, 42)
     assert get_squad_order(bot.conn, 42) == "time"  # everyone starts in time order
 
-    # a host-style private list (e.g. /host squads) toggled by user 42...
+    # a host-style private list (e.g. /cq_host > Availability) toggled by user 42...
     render = lambda order: squad_times_embed(bot, WEEK, order)  # noqa: E731
     view = OrderToggleView(render, bot.conn, 42)
     assert squad_numbers_in(view.embed().description) == [1, 14, 4]
@@ -100,7 +100,9 @@ def test_squad_order_is_remembered_across_every_view(bot):
     assert [s.number for s in editor.squads] == [1, 4, 14]
     breakdown = SquadBreakdownView(bot, WEEK, [player], discord.Embed(title="o"), user_id=42)
     assert [s.number for s in breakdown.squads] == [1, 4, 14]
-    assert [o.value for o in breakdown.children[0].options][1:] == ["1", "4", "14"]  # squad dropdown too
+    prep = PrepRosterView(bot, WEEK, [player], user_id=42)
+    assert [o.value for o in prep.children[0].options] == ["1", "4", "14"]  # Prep Roster's squad dropdown too
+    assert prep.squad == 1  # opens on the first squad
     assert OrderToggleView(render, bot.conn, 42).order == "number"
 
     # other users are unaffected
@@ -138,7 +140,7 @@ def test_old_reminder_sort_button_still_works(bot):
 def test_character_editor_marks_rows_that_differ_from_default(bot):
     player = db.get_player_by_discord_id(bot.conn, 42)
     db.set_default_availability(bot.conn, player.id, {1: "Preferred", 14: "Available", 4: "Not Available"})
-    db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
+    db.add_character(bot.conn, player.id, "Alt", "DRK", 3.0, "sub")
     alt = db.get_character(bot.conn, "Alt")
     db.set_character_overrides(bot.conn, alt["id"], {14: "Not Available"})
 

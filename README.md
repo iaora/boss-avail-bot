@@ -35,8 +35,8 @@ database setup is needed. To start the test data over, stop the test bot and del
 
 > **`bot_data/` is git-ignored** because the roster contains players' Discord handles and
 > IDs. It never goes to GitHub. Keep your copy locally. Without it, the bot starts with an
-> empty database, and hosts can load the roster with `/host import` and add squads with
-> `/config squad_time ... permanent:True`. The seed-based tests are skipped when the files
+> empty database, and hosts can load the roster with `/cq_config` > Import roster and add squads with
+> `/cq_config` > Squad time (Every week). The seed-based tests are skipped when the files
 > are missing.
 
 ### Discord application setup (one time)
@@ -58,11 +58,11 @@ database setup is needed. To start the test data over, stop the test bot and del
    **user ID, just the digits** (right-click them > Copy User ID), which shows as a clickable
    @mention, or a plain name. Don't add `<@ >`. It appears in `/cq characters` and defaults
    to "a host".
-5. Show the host commands to hosts. `/host`, `/config`, `/player` and `/character` are
+5. Show the host commands to hosts. `/cq_host`, `/cq_config`, `/player` and `/character` are
    hidden from everyone without Manage Server. Go to Server Settings > Integrations >
    Monkey Inc. > Manage, click each of the four, and allow the host role (see
    host_guide.txt, "Who can see the host commands"). Optionally copy the CQ
-   channel ID too (`CQ_CHANNEL_ID`), or set it later with `/config reminders`.
+   channel ID too (`CQ_CHANNEL_ID`), or set it later with `/cq_config` > Reminders.
 
 ## Development vs production bots
 
@@ -105,7 +105,7 @@ Notes:
   per bot, so each bot uploads its own copy of that folder at startup and re-checks it every
   10 minutes. Add or replace an image once, and both bots pick it up.
 - To use the player commands in the test server, your Discord username must be on the roster, or
-  add yourself there with `/player add`.
+  add yourself there with `/player` > Add.
 - One folder is enough. Both bots run the code checked out in this folder, and a running bot
   keeps the code it started with, so switching branches only affects a bot when you restart it.
   To try a branch: `git checkout <branch>`, then restart the **test** bot.
@@ -198,13 +198,13 @@ bot/
   importer.py      roster CSV + squad timings import, first-run seeding
   reminders.py     reminder/deadline settings
   timeutil.py      week/timezone helpers
-  views.py         embeds, reminder buttons, availability editor
+  views.py         embeds, reminder buttons, availability pop-up (and its fallback editor), /settings
   backup.py        python -m bot.backup prod|test
   cogs/player.py   player commands
-  cogs/host.py     host-only commands: /host, /config, /player, /character
+  cogs/host.py     host-only panels: /cq_host, /cq_config, /player, /character
   cogs/reminder.py weekly reminder scheduler
   damage.py        damage log parsing and averaging
-  squad_breakdown.py  /host availability per-squad player view
+  squad_breakdown.py  /cq_host > Availability and Prep Roster views
   class_icons.py   class icons (the bot's application emojis), synced from bot_data/class_icons/
   cogs/class_icons.py  background sync of the class icon folder
   cogs/damage_logs.py  watches #queen-logs for damage log uploads

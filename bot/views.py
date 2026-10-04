@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
@@ -80,8 +81,13 @@ def order_button_label(order: str) -> str:
     return "Sort by squad #" if order == "number" else "Sort by time"
 
 
-def squad_time_lines(squads: list[db.SquadTime]) -> str:
-    return "\n".join(f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}" for s in squads) or "*None*"
+def squad_time_lines(squads: list[db.SquadTime], mark_moved: bool = False) -> str:
+    """One line per squad; `mark_moved` (for hosts) flags squads moved for just this week."""
+    return "\n".join(
+        f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}"
+        + (" · ✏️ moved for this week" if mark_moved and s.overridden else "")
+        for s in squads
+    ) or "*None*"
 
 
 class OrderToggleView(discord.ui.View):
@@ -238,11 +244,11 @@ def reminder_message(bot: "MonkeyBot", week_start: date) -> tuple[discord.Embed,
     return embed, view
 
 
-def squad_times_embed(bot: "MonkeyBot", week_start: date, order: str) -> discord.Embed:
+def squad_times_embed(bot: "MonkeyBot", week_start: date, order: str, mark_moved: bool = False) -> discord.Embed:
     squads = order_squads(db.squads_for_week(bot.conn, week_start, bot.tz), order)
     return discord.Embed(
         title=f"Squad times: {timeutil.week_label(week_start)}",
-        description=squad_time_lines(squads),
+        description=squad_time_lines(squads, mark_moved),
         color=EMBED_COLOR,
     ).set_footer(text=f"Shown in your timezone · sorted by {'time' if order == 'time' else 'squad number'}")
 
@@ -555,10 +561,15 @@ class WeekPicker(discord.ui.View):
 
     async def _pick(self, interaction: discord.Interaction) -> None:
         week = date.fromisoformat(interaction.data["values"][0])
-        self.stop()
         initial, _ = db.effective_week_availability(self.bot.conn, self.player.id, week)
-        editor = AvailabilityEditor(self.bot, mode="weekly", player=self.player, week=week, initial=initial)
-        await editor.send(interaction, replace=True)
+        await open_availability(
+            interaction, self.bot, self.player, mode="weekly", week=week, initial=initial, on_saved=self._saved,
+            replace=True,
+        )
+
+    async def _saved(self, interaction: discord.Interaction, message: str) -> None:
+        self._rebuild()
+        await interaction.response.edit_message(content=message, embed=self.embed(), view=self)
 
     async def _reset(self, interaction: discord.Interaction) -> None:
         week = date.fromisoformat(interaction.data["values"][0])
@@ -571,16 +582,28 @@ class WeekPicker(discord.ui.View):
 
 # --------------------------------------------------------------------------- availability editor
 
+def summary_saved(bot: "MonkeyBot", player: db.Player, week: date):
+    """After saving from /cq availability: refresh it in place, and confirm privately."""
+
+    async def saved(interaction: discord.Interaction, message: str) -> None:
+        await rerender_summary(interaction, bot, player, week)
+        await interaction.followup.send(message, ephemeral=True)
+
+    return saved
+
+
 async def open_weekly_editor(interaction: discord.Interaction, bot: "MonkeyBot", player: db.Player, week: date) -> None:
     initial, _ = db.effective_week_availability(bot.conn, player.id, week)
-    editor = AvailabilityEditor(bot, mode="weekly", player=player, week=week, initial=initial)
-    await editor.send(interaction)
+    await open_availability(
+        interaction, bot, player, mode="weekly", week=week, initial=initial, on_saved=summary_saved(bot, player, week)
+    )
 
 
 async def open_default_editor(interaction: discord.Interaction, bot: "MonkeyBot", player: db.Player, week: date) -> None:
     initial = db.get_default_availability(bot.conn, player.id)
-    editor = AvailabilityEditor(bot, mode="default", player=player, week=week, initial=initial)
-    await editor.send(interaction)
+    await open_availability(
+        interaction, bot, player, mode="default", week=week, initial=initial, on_saved=summary_saved(bot, player, week)
+    )
 
 
 async def open_character_editor(
@@ -590,6 +613,7 @@ async def open_character_editor(
     character,
     week: date,
     *,
+    on_saved,
     replace=False,
     this_week_only=False,
 ) -> None:
@@ -603,10 +627,10 @@ async def open_character_editor(
         usual = db.get_default_availability(bot.conn, player.id)
         initial = {**usual, **db.get_character_overrides(bot.conn, character["id"])}
         mode = "character"
-    editor = AvailabilityEditor(
-        bot, mode=mode, player=player, week=week, initial=initial, character=character, base=usual
+    await open_availability(
+        interaction, bot, player, mode=mode, week=week, initial=initial, on_saved=on_saved,
+        character=character, base=usual, replace=replace,
     )
-    await editor.send(interaction, replace=replace)
 
 
 class CharacterPicker(discord.ui.View):
@@ -667,10 +691,47 @@ class CharacterPicker(discord.ui.View):
 
     async def _pick(self, interaction: discord.Interaction) -> None:
         character = self.characters[int(interaction.data["values"][0])]
-        self.stop()
         await open_character_editor(
-            interaction, self.bot, self.player, character, self.week, replace=True, this_week_only=self.this_week_only
+            interaction, self.bot, self.player, character, self.week, on_saved=self._saved, replace=True,
+            this_week_only=self.this_week_only,
         )
+
+    async def _saved(self, interaction: discord.Interaction, message: str) -> None:
+        # a fresh picker, so each character's "N squad(s) changed" description is up to date
+        picker = CharacterPicker(self.bot, self.player, self.week, self.this_week_only)
+        await interaction.response.edit_message(content=message, embed=picker.embed(), view=picker)
+
+
+def save_availability(
+    conn, mode: str, player: db.Player, week: date, levels: db.Availability, *, character=None, base=None
+) -> str:
+    """Save availability from the pop-up or the dropdown editor; returns the ✅ message for the player.
+
+    `levels` has every squad. Character modes save only the squads that differ: from `base` (the
+    character's usual for the week) for character_week, or from the player's default for character.
+    """
+    if mode == "weekly":
+        db.set_weekly_availability(conn, player.id, week, levels)
+        return f"✅ Saved your availability for the {timeutil.week_label(week)}."
+    if mode == "default":
+        db.set_default_availability(conn, player.id, levels)
+        return "✅ Saved your default availability."
+    if mode == "character_week":
+        changes = {n: lvl for n, lvl in levels.items() if (base or {}).get(n) != lvl}
+        db.set_character_weekly(conn, player.id, character["id"], week, changes)
+        return (
+            f"✅ Changed {len(changes)} squad(s) for {character['ign']}, for the {timeutil.week_label(week)} only."
+            if changes
+            else f"✅ {character['ign']} is back to normal for the {timeutil.week_label(week)}."
+        )
+    default = db.get_default_availability(conn, player.id)
+    overrides = {n: lvl for n, lvl in levels.items() if default.get(n) != lvl}
+    db.set_character_overrides(conn, character["id"], overrides)
+    return (
+        f"✅ Saved {len(overrides)} override(s) for {character['ign']}."
+        if overrides
+        else f"✅ {character['ign']} now follows your default schedule."
+    )
 
 
 class AvailabilityEditor(discord.ui.View):
@@ -821,31 +882,9 @@ class AvailabilityEditor(discord.ui.View):
 
     async def _save(self, interaction: discord.Interaction) -> None:
         full = {s.number: self.draft.get(s.number, "Not Available") for s in self.squads}
-        conn = self.bot.conn
-        if self.mode == "weekly":
-            db.set_weekly_availability(conn, self.player.id, self.week, full)
-            message = f"✅ Saved your availability for the {timeutil.week_label(self.week)}."
-        elif self.mode == "default":
-            db.set_default_availability(conn, self.player.id, full)
-            message = "✅ Saved your default availability."
-        elif self.mode == "character_week":
-            changes = {n: lvl for n, lvl in full.items() if self.default.get(n) != lvl}
-            db.set_character_weekly(conn, self.player.id, self.character["id"], self.week, changes)
-            message = (
-                f"✅ Changed {len(changes)} squad(s) for {self.character['ign']}, for the "
-                f"{timeutil.week_label(self.week)} only."
-                if changes
-                else f"✅ {self.character['ign']} is back to normal for the {timeutil.week_label(self.week)}."
-            )
-        else:
-            base = db.get_default_availability(conn, self.player.id)
-            overrides = {n: lvl for n, lvl in full.items() if base.get(n) != lvl}
-            db.set_character_overrides(conn, self.character["id"], overrides)
-            message = (
-                f"✅ Saved {len(overrides)} override(s) for {self.character['ign']}."
-                if overrides
-                else f"✅ {self.character['ign']} now follows your default schedule."
-            )
+        message = save_availability(
+            self.bot.conn, self.mode, self.player, self.week, full, character=self.character, base=self.default
+        )
         self.stop()
         embed = discord.Embed(title=self.title(), description=self._lines(full), color=EMBED_COLOR)
         if self.mode == "character":
@@ -855,6 +894,317 @@ class AvailabilityEditor(discord.ui.View):
         await interaction.response.edit_message(content=message, embed=embed, view=None)
 
 
+# --------------------------------------------------------------------------- per-user settings (/settings)
+
+# Timezones players can pick (a dropdown holds at most 25). Discord doesn't tell bots a user's
+# timezone, so plain-text times (checkbox labels) use the one the player picked.
+TIMEZONE_CHOICES = [
+    ("Hawaii", "Pacific/Honolulu"),
+    ("Alaska", "America/Anchorage"),
+    ("US Pacific", "America/Los_Angeles"),
+    ("Arizona", "America/Phoenix"),
+    ("US Mountain", "America/Denver"),
+    ("US Central", "America/Chicago"),
+    ("US Eastern", "America/New_York"),
+    ("Mexico City", "America/Mexico_City"),
+    ("Brazil (São Paulo)", "America/Sao_Paulo"),
+    ("UTC", "UTC"),
+    ("UK / Ireland", "Europe/London"),
+    ("Central Europe", "Europe/Berlin"),
+    ("Eastern Europe", "Europe/Helsinki"),
+    ("India", "Asia/Kolkata"),
+    ("Thailand / Vietnam / Jakarta", "Asia/Bangkok"),
+    ("Singapore / Malaysia / Philippines / China", "Asia/Singapore"),
+    ("Japan / Korea", "Asia/Tokyo"),
+    ("Australia West (Perth)", "Australia/Perth"),
+    ("Australia Central (Adelaide)", "Australia/Adelaide"),
+    ("Queensland (Brisbane)", "Australia/Brisbane"),
+    ("NSW / Victoria (Sydney)", "Australia/Sydney"),
+    ("New Zealand", "Pacific/Auckland"),
+]
+TIMEZONE_LABELS = {zone: label for label, zone in TIMEZONE_CHOICES}
+
+
+def get_user_timezone(conn, user_id: int | None) -> ZoneInfo | None:
+    """The timezone the user picked in /settings, or None if they haven't picked one."""
+    name = db.get_setting(conn, f"timezone_user:{user_id}") if user_id else None
+    try:
+        return ZoneInfo(name) if name else None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def set_user_timezone(conn, user_id: int, zone: str) -> None:
+    ZoneInfo(zone)  # raises for an unknown zone
+    db.set_setting(conn, f"timezone_user:{user_id}", zone)
+
+
+def timezone_text(tz: ZoneInfo) -> str:
+    """e.g. 'US Eastern (EDT)', or 'Thailand / Vietnam / Jakarta (UTC+07)' for zones without letters."""
+    abbr = datetime.now(tz).strftime("%Z")
+    if abbr and abbr[0] in "+-":
+        abbr = f"UTC{abbr}"
+    label = TIMEZONE_LABELS.get(tz.key, tz.key)
+    return label if abbr in (label, "") else f"{label} ({abbr})"
+
+
+class TimezoneSelect(discord.ui.Select):
+    """The timezone dropdown; `on_pick(interaction, zone)` runs after the choice is saved."""
+
+    def __init__(self, user_id: int, current: ZoneInfo | None, on_pick, row: int | None = None):
+        now = timeutil.now_utc()
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=zone,
+                description=f"Now: {timeutil.local_label(int(now.timestamp()), ZoneInfo(zone), twelve_hour=True)}",
+                default=current is not None and current.key == zone,
+            )
+            for label, zone in TIMEZONE_CHOICES
+        ]
+        super().__init__(placeholder="Choose your timezone…", options=options, row=row)
+        self.user_id = user_id
+        self.on_pick = on_pick
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot: MonkeyBot = interaction.client  # type: ignore[assignment]
+        set_user_timezone(bot.conn, self.user_id, self.values[0])
+        await self.on_pick(interaction, self.values[0])
+
+
+class SettingsView(discord.ui.View):
+    """/settings: the user's timezone and squad order, changed in place."""
+
+    def __init__(self, bot: "MonkeyBot", user_id: int):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.user_id = user_id
+        self._rebuild()
+
+    def embed(self) -> discord.Embed:
+        tz = get_user_timezone(self.bot.conn, self.user_id)
+        order = get_squad_order(self.bot.conn, self.user_id)
+        if tz:
+            now = timeutil.local_label(int(timeutil.now_utc().timestamp()), tz, twelve_hour=True)
+            timezone_value = f"**{timezone_text(tz)}** · your time now: {now}"
+        else:
+            timezone_value = "Not set. You'll be asked the first time you change your availability."
+        embed = discord.Embed(title="Your settings", color=EMBED_COLOR)
+        embed.add_field(
+            name="🌐 Timezone",
+            value=f"{timezone_value}\nUsed for the run times in the availability pop-ups.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔀 Squad order",
+            value=f"**{'By time' if order == 'time' else 'By squad number'}**\nUsed for every list of squads.",
+            inline=False,
+        )
+        return embed
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        tz = get_user_timezone(self.bot.conn, self.user_id)
+        self.add_item(TimezoneSelect(self.user_id, tz, self._refresh, row=0))
+        order = get_squad_order(self.bot.conn, self.user_id)
+        sort_btn = discord.ui.Button(
+            label=order_button_label(other_order(order)), style=discord.ButtonStyle.secondary, emoji="🔀", row=1
+        )
+        sort_btn.callback = self._toggle_order
+        self.add_item(sort_btn)
+
+    async def _refresh(self, interaction: discord.Interaction, *_args) -> None:
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _toggle_order(self, interaction: discord.Interaction) -> None:
+        set_squad_order(self.bot.conn, self.user_id, other_order(get_squad_order(self.bot.conn, self.user_id)))
+        await self._refresh(interaction)
+
+    async def send(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(embed=self.embed(), view=self, ephemeral=True)
+
+
+# --------------------------------------------------------------------------- availability pop-up
+
+# Discord limits: a checkbox group holds up to 10 options and a modal up to 5 top-level components.
+# The pop-up is the "can't make any runs" checkbox plus the Preferred and Available sections, each
+# split into the same chunks, so it fits up to 2 chunks of 10 runs. With more runs, the dropdown
+# editor is used instead.
+CHECKBOX_GROUP_MAX = 10
+POPUP_MAX_SQUADS = 2 * CHECKBOX_GROUP_MAX
+TITLE_MAX = 45  # Discord's limit for a modal title
+
+
+def popup_chunks(items: list) -> list[list]:
+    """Split items (squads, characters) into as few equal-sized checkbox groups as fit (16 -> 8 + 8)."""
+    if not items:
+        return []
+    size = math.ceil(len(items) / math.ceil(len(items) / CHECKBOX_GROUP_MAX))
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def ticked_levels(squads: list[db.SquadTime], preferred: set[int], available: set[int]) -> db.Availability:
+    """Every squad's level from the ticked boxes: Preferred wins over Available, unticked is Not Available."""
+    return {
+        s.number: "Preferred" if s.number in preferred else "Available" if s.number in available else "Not Available"
+        for s in squads
+    }
+
+
+class AvailabilityModal(discord.ui.Modal):
+    """The availability pop-up: tick runs under Preferred and Available.
+
+    Used for every mode the dropdown editor has (weekly, default, character, character_week).
+    Checkbox labels are plain text, so they can't show Discord timestamps; run times are written in
+    the timezone the player picked (/settings) instead. After saving, `on_saved(interaction, message)`
+    refreshes the message the player came from.
+    """
+
+    def __init__(
+        self,
+        bot: "MonkeyBot",
+        player: db.Player,
+        *,
+        mode: str,
+        week: date,
+        squads: list[db.SquadTime],
+        tz: ZoneInfo,
+        initial: db.Availability,
+        on_saved,
+        character=None,
+        base: db.Availability | None = None,
+    ):
+        super().__init__(title=self._title(mode, week, character), timeout=900)
+        self.bot = bot
+        self.player = player
+        self.mode = mode
+        self.week = week
+        self.squads = squads
+        self.character = character
+        self.base = base
+        self.on_saved = on_saved
+
+        # One click for "I can't make it": every run is saved as Not Available, whatever is ticked.
+        self.none = discord.ui.Checkbox()
+        self.add_item(discord.ui.Label(
+            text="❌ Can't make any of these runs", component=self.none,
+            description="Tick to save every run as Not Available; the boxes below are then ignored",
+        ))
+        # character modes: show what each run is otherwise (the player's default, or the character's usual week)
+        compare = {"character": "Your default", "character_week": "Usual this week"}.get(mode)
+        chunks = popup_chunks(squads)
+        self.groups: dict[str, list[discord.ui.CheckboxGroup]] = {"Preferred": [], "Available": []}
+        descriptions = {
+            "Preferred": f"Runs you'd most like. Times in {timezone_text(tz)}; change it in /settings"[:100],
+            "Available": "Runs you can also make. Unticked in both = Not Available; ticked in both = Preferred",
+        }
+        for level, groups in self.groups.items():
+            for index, chunk in enumerate(chunks):
+                options = []
+                for s in chunk:
+                    otherwise = (base or {}).get(s.number, "Not Available")
+                    options.append(discord.CheckboxGroupOption(
+                        label=f"Squad {s.number} · {timeutil.run_label(s.starts_at, tz)}",
+                        value=str(s.number),
+                        description=f"{compare}: {LEVEL_EMOJI[otherwise]} {otherwise}" if compare else None,
+                        default=initial.get(s.number) == level,
+                    ))
+                group = discord.ui.CheckboxGroup(required=False, min_values=0, max_values=len(chunk), options=options)
+                groups.append(group)
+                text = f"{LEVEL_EMOJI[level]} {level}" + (f" ({index + 1} of {len(chunks)})" if len(chunks) > 1 else "")
+                self.add_item(
+                    discord.ui.Label(text=text, description=descriptions[level] if index == 0 else None, component=group)
+                )
+
+    @staticmethod
+    def _title(mode: str, week: date, character) -> str:
+        if mode == "weekly":
+            title = timeutil.week_label(week, capital=True)
+        elif mode == "default":
+            title = "Your default availability"
+        elif mode == "character_week":
+            title = f"{character['ign']}: {timeutil.short_week_label(week)} week only"
+        else:
+            title = f"{character['ign']}: ongoing schedule"
+        return title if len(title) <= TITLE_MAX else title[: TITLE_MAX - 1] + "…"
+
+    def ticked(self, level: str) -> set[int]:
+        return {int(value) for group in self.groups[level] for value in group.values}
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        preferred, available = self.ticked("Preferred"), self.ticked("Available")
+        if self.none.value:
+            preferred, available = set(), set()
+        levels = ticked_levels(self.squads, preferred, available)
+        message = save_availability(
+            self.bot.conn, self.mode, self.player, self.week, levels, character=self.character, base=self.base
+        )
+        if self.none.value:
+            message += " Every run is 🔴 Not Available."
+        elif both := sorted(preferred & available):
+            message += f" Squad(s) {', '.join(map(str, both))} were ticked in both sections, so they're Preferred."
+        await self.on_saved(interaction, message)
+
+
+async def open_availability(
+    interaction: discord.Interaction,
+    bot: "MonkeyBot",
+    player: db.Player,
+    *,
+    mode: str,
+    week: date,
+    initial: db.Availability,
+    on_saved,
+    character=None,
+    base: db.Availability | None = None,
+    replace: bool = False,
+) -> None:
+    """Open the availability pop-up, or the dropdown editor when there are too many runs for it.
+
+    The first time, the player picks a timezone first (the pop-up shows run times in it). `replace`
+    only affects the dropdown editor: show it in place of the current message.
+    """
+    squads = order_squads(db.squads_for_week(bot.conn, week, bot.tz), get_squad_order(bot.conn, interaction.user.id))
+    if not squads:
+        await interaction.response.send_message("No squads are configured yet. Ask a host.", ephemeral=True)
+        return
+    if len(squads) > POPUP_MAX_SQUADS:
+        editor = AvailabilityEditor(
+            bot, mode=mode, player=player, week=week, initial=initial, character=character, base=base
+        )
+        await editor.send(interaction, replace=replace)
+        return
+
+    def modal(tz: ZoneInfo, saved) -> AvailabilityModal:
+        return AvailabilityModal(
+            bot, player, mode=mode, week=week, squads=squads, tz=tz, initial=initial, on_saved=saved,
+            character=character, base=base,
+        )
+
+    tz = get_user_timezone(bot.conn, interaction.user.id)
+    if tz is not None:
+        await interaction.response.send_modal(modal(tz, on_saved))
+        return
+
+    # First time: ask for the timezone, then open the pop-up straight from the dropdown. Saving from
+    # there replaces the prompt with the ✅ message.
+    async def prompt_saved(saved: discord.Interaction, message: str) -> None:
+        await saved.response.edit_message(content=message, embed=None, view=None)
+
+    async def open_modal(pick: discord.Interaction, zone: str) -> None:
+        await pick.response.send_modal(modal(ZoneInfo(zone), prompt_saved))
+
+    view = discord.ui.View(timeout=900)
+    view.add_item(TimezoneSelect(interaction.user.id, None, open_modal))
+    await interaction.response.send_message(
+        "🌐 Pick your timezone first, so the run times show in your local time. "
+        "You can change it later in /settings.",
+        view=view,
+        ephemeral=True,
+    )
+
+
 # --------------------------------------------------------------------------- character status
 
 CHARACTER_STATUS_INFO = {
@@ -862,7 +1212,7 @@ CHARACTER_STATUS_INFO = {
     "sub": ("⏳", "Flex", "Only slot if needed"),  # stored as "sub"; shown as Flex
     "inactive": ("💤", "Inactive", "Don't slot this character"),
 }
-# Players choose between these; only a host can mark a character inactive (/character edit).
+# Players choose between these; only a host can mark a character inactive (/character > Change).
 PLAYER_CHARACTER_STATUSES = ("static", "sub")
 
 
@@ -1006,7 +1356,7 @@ def damage_history_embed(conn, char, *, boss_id: int = db.CQ) -> discord.Embed:
 
 class DamageHistoryPicker(discord.ui.View):
     """From /cq characters: pick one of your characters to see its damage history (same view as
-    /host damage_history). The dropdown stays, so you can switch characters."""
+    /cq_host > Damage history). The dropdown stays, so you can switch characters."""
 
     def __init__(self, bot: "MonkeyBot", player: db.Player):
         super().__init__(timeout=900)

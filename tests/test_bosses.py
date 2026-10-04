@@ -109,7 +109,7 @@ def conn(tmp_path):
 
 def test_bosses_are_isolated(conn):
     player = db.create_player(conn, name="Alice", discord_handle="@alice", discord_id=11)
-    db.add_character(conn, player.id, "Ace", "NL", "DPS", 4.0, "static")
+    db.add_character(conn, player.id, "Ace", "NL", 4.0, "static")
     ace = db.get_character(conn, "Ace")
 
     # squads and availability
@@ -162,7 +162,7 @@ def test_bosses_are_isolated(conn):
 
 def test_removing_a_character_removes_it_for_every_boss(conn):
     player = db.create_player(conn, name="Alice", discord_handle="@alice")
-    db.add_character(conn, player.id, "Ace", "NL", "DPS", 4.0)
+    db.add_character(conn, player.id, "Ace", "NL", 4.0)
     ace = db.get_character(conn, "Ace")
     db.update_character(conn, ace["id"], status="sub", boss_id=OTHER)
     db.delete_character(conn, ace["id"])

@@ -49,7 +49,7 @@ def cog(tmp_path):
     bot.is_host_member = lambda member: True
     player = db.create_player(bot.conn, name="Tester", discord_handle="@tester")
     for ign in ("Alpha", "Bravo"):
-        db.add_character(bot.conn, player.id, ign, "NL", "DPS", 1.0)
+        db.add_character(bot.conn, player.id, ign, "NL", 1.0)
     yield DamageLogCog(bot)
     bot.conn.close()
 

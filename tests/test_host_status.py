@@ -1,4 +1,4 @@
-"""/host status lists the players who submitted a schedule change (no network)."""
+"""/cq_host > Status lists the players who submitted a schedule change (no network)."""
 
 import asyncio
 import dataclasses
@@ -21,10 +21,9 @@ class FakeResponse:
         self.sent.append({"content": content, **kwargs})
 
 
-def run_status(cog, week_choice=None):
+def run_status(cog):
     interaction = SimpleNamespace(response=FakeResponse())
-    cog._week = lambda _choice: WEEK
-    asyncio.run(HostCog.status.callback(cog, interaction, week_choice))
+    asyncio.run(cog.status(interaction, WEEK))
     return interaction.response.sent[0]["embed"]
 
 
@@ -67,7 +66,7 @@ def test_status_lists_character_status_changes(tmp_path):
     alice = db.create_player(conn, name="Alice", discord_handle="@alice", discord_id=1)
     bob = db.create_player(conn, name="Bob", discord_handle="@bob", discord_id=2)
     for player, ign in [(alice, "Ace"), (alice, "Ally"), (bob, "Bolt"), (bob, "Back")]:
-        db.add_character(conn, player.id, ign, "NL", "DPS", 3.0, "static")
+        db.add_character(conn, player.id, ign, "NL", 3.0, "static")
     ace, ally, bolt, back = (db.get_character(conn, n)["id"] for n in ("Ace", "Ally", "Bolt", "Back"))
 
     db.set_character_statuses(conn, alice.id, {ace: "sub"}, changed_by=1)          # by the player
@@ -103,7 +102,7 @@ def test_open_availability_button(tmp_path):
     cog._week = lambda _choice: WEEK
 
     status = SimpleNamespace(response=FakeResponse())
-    asyncio.run(HostCog.status.callback(cog, status, None))
+    asyncio.run(cog.status(status, WEEK))
     [button] = status.response.sent[0]["view"].children
     assert button.label == "Open availability"
 
@@ -157,7 +156,7 @@ def test_see_individual_availability(tmp_path):
 
     # the status message has buttons only: no dropdown
     status = SimpleNamespace(response=FakeResponse())
-    asyncio.run(HostCog.status.callback(cog, status, None))
+    asyncio.run(cog.status(status, WEEK))
     view = status.response.sent[0]["view"]
     assert not [c for c in view.children if isinstance(c, discord.ui.Select)]
     assert [c.label for c in view.children] == ["See individual availability", "Open availability"]
@@ -218,7 +217,7 @@ def test_no_individual_button_when_no_one_changed(tmp_path):
     cog = HostCog(bot)
     cog._week = lambda _choice: WEEK
     status = SimpleNamespace(response=FakeResponse())
-    asyncio.run(HostCog.status.callback(cog, status, None))
+    asyncio.run(cog.status(status, WEEK))
     assert [c.label for c in status.response.sent[0]["view"].children] == ["Open availability"]
     bot.conn.close()
 
@@ -231,7 +230,7 @@ def test_changes_view_includes_character_week_changes(tmp_path):
     db.set_squad_template(conn, 1, 0, "12:00")
     db.set_squad_template(conn, 2, 1, "11:00")
     player = db.create_player(conn, name="Pat", discord_handle="@pat")
-    db.add_character(conn, player.id, "Ace", "NL", "DPS", 3.0)
+    db.add_character(conn, player.id, "Ace", "NL", 3.0)
     db.set_default_availability(conn, player.id, {1: "Preferred", 2: "Preferred"})
     ace = db.get_character(conn, "Ace")
     db.set_character_weekly(conn, player.id, ace["id"], WEEK, {2: "Not Available"})  # checks them in too

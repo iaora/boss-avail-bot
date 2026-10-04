@@ -1,9 +1,10 @@
-"""Player-facing slash commands, all under /cq:
+"""Player-facing slash commands:
 
   /cq availability   your CQ availability; No change, Update my default, Character availability
                      and Update a future week are buttons on it
   /cq characters     your characters; Set character status, Character availability and
                      Damage history are buttons on it
+  /settings          your bot settings (timezone, squad order); works for anyone in the server
 
 Adding or changing players and characters is host-only (see /player and /character).
 """
@@ -22,6 +23,7 @@ from ..views import (
     CharacterStatusEditor,
     DamageHistoryPicker,
     ReminderButton,
+    SettingsView,
     character_status_label,
     send_player_summary,
 )
@@ -98,5 +100,19 @@ class CqCog(PlayerCommands, commands.GroupCog, group_name="cq", group_descriptio
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
+# --------------------------------------------------------------------------- /settings
+
+
+class SettingsCog(commands.Cog):
+    def __init__(self, bot: MonkeyBot):
+        self.bot = bot
+
+    @app_commands.command(name="settings", description="Your bot settings: timezone and squad order")
+    async def settings(self, interaction: discord.Interaction):
+        # Settings belong to the Discord user, so this works whether or not they're on the roster.
+        await SettingsView(self.bot, interaction.user.id).send(interaction)
+
+
 async def setup(bot: MonkeyBot) -> None:
     await bot.add_cog(CqCog(bot))
+    await bot.add_cog(SettingsCog(bot))

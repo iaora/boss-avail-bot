@@ -1,12 +1,12 @@
-"""Host-only slash commands, in four groups:
+"""Host-only slash commands, each a panel of buttons:
 
-  /host       availability, roster import, squad times, damage history, reminders
-  /config     settings: reminders, damage logs, squad schedule
-  /player     add, edit, link
-  /character  add, edit, remove
+  /cq_host    status, availability, prep roster, damage history, post the reminder
+  /cq_config  settings panel: buttons for reminders, damage logs, squad time, remove squads, roster import
+  /player     panel: Add, Change, Link buttons
+  /character  panel: Add, Change, Remove buttons
 
 A host is anyone with the role in HOST_ROLE_ID, or anyone with the Manage Server permission.
-Each group is hidden from everyone without Manage Server; a server admin shows them to the
+Each is hidden from everyone without Manage Server; a server admin shows them to the
 host role under Server Settings > Integrations (see host_guide.txt). HostOnly.interaction_check
 enforces the host role on every command regardless of visibility.
 """
@@ -21,7 +21,7 @@ from discord.ext import commands
 
 from .. import damage, db, importer, reminders, timeutil
 from ..app import MonkeyBot
-from ..squad_breakdown import SquadBreakdownView
+from ..squad_breakdown import PrepRosterView, SquadBreakdownView
 from ..views import (
     EMBED_COLOR,
     LEVEL_EMOJI,
@@ -34,27 +34,15 @@ from ..views import (
     order_button_label,
     order_squads,
     other_order,
+    popup_chunks,
     send_reminder,
     set_squad_order,
+    squad_times_embed,
 )
 from .damage_logs import DEFAULT_CHANNEL_NAME, logs_channel_id
 from .reminder import mark_latest_due_as_sent
 
-WEEK_CHOICES = [
-    app_commands.Choice(name="Next week (upcoming)", value="upcoming"),
-    app_commands.Choice(name="This week (current)", value="current"),
-]
-STATUS_CHOICES = [
-    app_commands.Choice(name="Active", value="active"),
-    app_commands.Choice(name="Inactive", value="inactive"),
-]
-BUFF_CHOICES = [app_commands.Choice(name=b, value=b) for b in db.BUFFS]
-CHARACTER_STATUS_CHOICES = [
-    app_commands.Choice(name="Static (prioritize)", value="static"),
-    app_commands.Choice(name="Flex (only if needed)", value="sub"),
-    app_commands.Choice(name="Inactive (don't slot)", value="inactive"),
-]
-STATUS_CHANGE_DAYS = 7  # how far back /host status lists character status changes
+STATUS_CHANGE_DAYS = 7  # how far back Status lists character status changes
 DAY_CHOICES = [app_commands.Choice(name=d, value=i) for i, d in enumerate(timeutil.WEEKDAYS)]
 
 
@@ -91,23 +79,6 @@ class HostOnly:
             raise app_commands.CheckFailure("host only")
         return True
 
-    def _week(self, which: app_commands.Choice[str] | None) -> date:
-        now = timeutil.now_utc()
-        if which and which.value == "current":
-            return timeutil.current_week_start(now, self.bot.tz)
-        return timeutil.upcoming_week_start(now, self.bot.tz)
-
-    async def _get_player(self, interaction: discord.Interaction, value: str) -> db.Player | None:
-        player = db.get_player(self.bot.conn, int(value)) if value.isdigit() else None
-        if player is None:
-            matches = db.search_players(self.bot.conn, value, limit=2)
-            player = matches[0] if len(matches) == 1 else None
-        if player is None:
-            await interaction.response.send_message(
-                f"Couldn't find a single player matching **{value}**. Pick one from the suggestions.", ephemeral=True
-            )
-        return player
-
 
 async def player_autocomplete(interaction: discord.Interaction, current: str):
     conn = interaction.client.conn
@@ -122,13 +93,8 @@ async def character_autocomplete(interaction: discord.Interaction, current: str)
     return [app_commands.Choice(name=f"{r['ign']} ({r['job'] or '?'})", value=r["ign"]) for r in rows]
 
 
-async def job_autocomplete(interaction: discord.Interaction, current: str):
-    jobs = db.known_jobs(interaction.client.conn)
-    return [app_commands.Choice(name=j, value=j) for j in jobs if current.upper() in j][:25]
-
-
 class IndividualAvailabilityView(discord.ui.View):
-    """From /host status: one private message with a dropdown of the players who changed the week.
+    """From /cq_host > Status: one private message with a dropdown of the players who changed the week.
     Picking someone (or re-sorting) updates this same message in place."""
 
     def __init__(self, cog: "HostCog", week: date, players: list[db.Player], user_id: int):
@@ -197,16 +163,21 @@ class IndividualAvailabilityView(discord.ui.View):
         await self._refresh(interaction)
 
 
-# --------------------------------------------------------------------------- /host
+# --------------------------------------------------------------------------- /cq_host
 
 
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.guild_only()
-class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description="Host tools: availability, roster import, squads, damage, reminders"):
-    @app_commands.command(name="status", description="How many active players have confirmed their availability")
-    @app_commands.choices(week=WEEK_CHOICES)
-    async def status(self, interaction: discord.Interaction, week: app_commands.Choice[str] | None = None):
-        wk = self._week(week)
+class HostCog(HostOnly, commands.Cog):
+    """/cq_host: a panel of buttons (see HostPanel). Each button runs one of the methods below."""
+
+    @app_commands.command(name="cq_host", description="Host tools: status, availability, prep roster, damage history, reminder")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def cq_host(self, interaction: discord.Interaction):
+        panel = HostPanel(self)
+        await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+
+    async def status(self, interaction: discord.Interaction, wk: date) -> None:
+        """How many active players have confirmed their availability for the week."""
         confirmations = db.get_confirmations(self.bot.conn, wk)
         active = db.list_players(self.bot.conn, ("active",))
         no_change = sum(1 for p in active if confirmations.get(p.id) == "no_change")
@@ -267,32 +238,16 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             if not self.bot.is_host(button_interaction):
                 await button_interaction.response.send_message("Only hosts can use this.", ephemeral=True)
                 return
-            await self._all_availability(button_interaction, wk)  # same view as /host availability
+            await self.all_availability(button_interaction, wk)  # same view as the Availability button
 
         button.callback = open_availability
         view.add_item(button)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(
-        name="availability",
-        description="Everyone's availability for a week, or one player's (weekly update, else their default)",
-    )
-    @app_commands.describe(player="Leave empty for all active players")
-    @app_commands.choices(week=WEEK_CHOICES)
-    @app_commands.autocomplete(player=player_autocomplete)
-    async def availability(
-        self,
-        interaction: discord.Interaction,
-        player: str | None = None,
-        week: app_commands.Choice[str] | None = None,
-    ):
-        wk = self._week(week)
-        if player:
-            if p := await self._get_player(interaction, player):
-                view = OrderToggleView(lambda order: self._player_embed(p, wk, order), self.bot.conn, interaction.user.id)
-                await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
-            return
-        await self._all_availability(interaction, wk)
+    async def player_availability(self, interaction: discord.Interaction, player: db.Player, wk: date) -> None:
+        """One player's availability for the week (their weekly update, else their default)."""
+        view = OrderToggleView(lambda order: self._player_embed(player, wk, order), self.bot.conn, interaction.user.id)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     def _changes(self, player: db.Player, wk: date, order: str = "time") -> list[tuple[db.SquadTime, str | None, str]]:
         """Squads where the player's availability for the week differs from their default:
@@ -371,7 +326,8 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             embed.add_field(name="Characters" if i == 0 else "​", value=chunk, inline=False)
         return embed
 
-    async def _all_availability(self, interaction: discord.Interaction, wk: date) -> None:
+    async def all_availability(self, interaction: discord.Interaction, wk: date) -> None:
+        """Everyone's availability for the week, per squad."""
         conn = self.bot.conn
         players = db.list_players(conn, ("active",))
         squads = db.squads_for_week(conn, wk, self.bot.tz)
@@ -401,70 +357,36 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
                 color=EMBED_COLOR,
             )
             embed.set_footer(
-                text="Use the buttons for who's 🟢 Preferred / 🟡 Available per squad, or pick a squad for their "
-                "characters"
+                text="Use the buttons for who's 🟢 Preferred / 🟡 Available per squad. Prep Roster in /cq_host "
+                "shows each squad's characters"
             )
             return embed
 
         view = SquadBreakdownView(self.bot, wk, players, overview, interaction.user.id)
         await interaction.response.send_message(embed=view.current_embed(), view=view, ephemeral=True)
 
-    @app_commands.command(name="import", description="Upload the roster CSV to refresh characters, squads and slots")
-    @app_commands.describe(file="CSV export of the CQ Roster sheet")
-    async def import_csv(self, interaction: discord.Interaction, file: discord.Attachment):
-        if not file.filename.lower().endswith(".csv") or file.size > 5_000_000:
-            await interaction.response.send_message("Please attach the roster as a .csv file (under 5 MB).", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+    async def prep_roster(self, interaction: discord.Interaction, wk: date) -> None:
+        """One squad at a time: the characters at 🟢 Preferred or 🟡 Available, for slotting."""
+        view = PrepRosterView(self.bot, wk, db.list_players(self.bot.conn, ("active",)), interaction.user.id)
+        await interaction.response.send_message(embed=view.current_embed(), view=view, ephemeral=True)
+
+    async def damage_history(self, interaction: discord.Interaction, character: str) -> None:
+        """A character's recorded runs and current damage (the name is matched like /character's)."""
         try:
-            text = (await file.read()).decode("utf-8-sig")
-            result = importer.import_roster(self.bot.conn, text)
-        except (ValueError, UnicodeDecodeError) as e:
-            await interaction.followup.send(f"❌ Import failed: {e}", ephemeral=True)
+            char = find_character(self.bot.conn, character)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
             return
-        await interaction.followup.send(
-            "✅ Import complete. Player statuses and availability that players set in the bot were not changed.\n"
-            f"```\n{result.summary()[:1800]}\n```",
-            ephemeral=True,
-        )
+        await interaction.response.send_message(embed=damage_history_embed(self.bot.conn, char), ephemeral=True)
 
-    @app_commands.command(name="squads", description="Show squad times for a week")
-    @app_commands.choices(week=WEEK_CHOICES)
-    async def squads(self, interaction: discord.Interaction, week: app_commands.Choice[str] | None = None):
-        wk = self._week(week)
-        squads = db.squads_for_week(self.bot.conn, wk, self.bot.tz)
-
-        def render(order: str) -> discord.Embed:
-            lines = [
-                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}"
-                + (" · ✏️ edited for this week" if s.overridden else "")
-                for s in order_squads(squads, order)
-            ]
-            embed = discord.Embed(
-                title=f"Squad times: {timeutil.week_label(wk)}",
-                description="\n".join(lines) or "*No squads configured.*",
-                color=EMBED_COLOR,
-            )
-            embed.set_footer(text="Times are shown in your timezone")
-            return embed
-
-        view = OrderToggleView(render, self.bot.conn, interaction.user.id)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
-
-    @app_commands.command(name="damage_history", description="A character's recorded runs and current damage")
-    @app_commands.autocomplete(character=character_autocomplete)
-    async def damage_history(self, interaction: discord.Interaction, character: str):
-        conn = self.bot.conn
-        char = db.get_character(conn, character)
-        if char is None:
-            await interaction.response.send_message(f"No character named **{character}**.", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=damage_history_embed(conn, char), ephemeral=True)
-
-    @app_commands.command(name="remind_now", description="Post next week's availability reminder right now")
-    async def remind_now(self, interaction: discord.Interaction):
+    def reminder_channel(self, interaction: discord.Interaction):
+        """Where the reminder is posted: the configured channel, else the channel this was used in."""
         settings = reminders.load(self.bot.conn, self.bot.config.cq_channel_id)
-        channel = self.bot.get_channel(settings.channel_id) if settings.channel_id else interaction.channel
+        return self.bot.get_channel(settings.channel_id) if settings.channel_id else interaction.channel
+
+    async def remind_now(self, interaction: discord.Interaction) -> None:
+        """Post next week's availability reminder right now."""
+        channel = self.reminder_channel(interaction)
         if not isinstance(channel, discord.abc.Messageable):
             await interaction.response.send_message("I can't post in the configured channel.", ephemeral=True)
             return
@@ -475,344 +397,1146 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         await interaction.response.send_message(f"📣 Posted: {message.jump_url}", ephemeral=True)
 
 
-# --------------------------------------------------------------------------- /config
+class HostPanel(discord.ui.View):
+    """The /cq_host message: a week dropdown, then a button per host tool. Status, Availability,
+    Prep Roster and Player availability use the chosen week."""
 
+    WEEKS = {"upcoming": "Next week (upcoming)", "current": "This week (current)"}
 
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.guild_only()
-class ConfigCog(HostOnly, commands.GroupCog, group_name="config", group_description="Bot settings: reminders, damage logs, squad schedule"):
-    @app_commands.command(name="reminders", description="View or change the weekly reminder schedule")
-    @app_commands.describe(
-        channel="Channel to post the reminder in (the CQ channel)",
-        remind_days="Days the reminder is posted, comma-separated, e.g. Wed, Fri",
-        remind_time="24h time the reminders are posted, e.g. 18:00",
-        deadline_day="Deadline day (in the week before the squads run)",
-        deadline_time="24h deadline time, e.g. 12:00",
-        enabled="Turn the automatic weekly reminders on or off",
-    )
-    @app_commands.choices(deadline_day=DAY_CHOICES)
-    async def reminder_config(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel | None = None,
-        remind_days: str | None = None,
-        remind_time: str | None = None,
-        deadline_day: app_commands.Choice[int] | None = None,
-        deadline_time: str | None = None,
-        enabled: bool | None = None,
-    ):
-        conn = self.bot.conn
-        try:
-            updates = {
-                "cq_channel_id": str(channel.id) if channel else None,
-                "reminder_weekdays": ",".join(map(str, reminders.parse_weekdays(remind_days))) if remind_days else None,
-                "reminder_time": _valid_hhmm(remind_time) if remind_time else None,
-                "deadline_weekday": str(deadline_day.value) if deadline_day else None,
-                "deadline_time": _valid_hhmm(deadline_time) if deadline_time else None,
-                "reminder_enabled": ("1" if enabled else "0") if enabled is not None else None,
-            }
-        except ValueError:
-            await interaction.response.send_message(
-                "Days must look like `Wed, Fri` and times like `18:00`.", ephemeral=True
-            )
-            return
-        for key, value in updates.items():
-            if value is not None:
-                db.set_boss_setting(conn, key, value)
-        if remind_days or remind_time:
-            # A new schedule only affects future reminders; don't post one whose new time already passed.
-            mark_latest_due_as_sent(self.bot)
+    def __init__(self, cog: HostCog):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.week = "upcoming"
+        self._rebuild()
 
-        settings = reminders.load(conn, self.bot.config.cq_channel_id)
-        wk = timeutil.upcoming_week_start(timeutil.now_utc(), self.bot.tz)
-        embed = discord.Embed(title="Reminder settings", description=settings.describe(self.bot.tz), color=EMBED_COLOR)
-        embed.add_field(
-            name=f"For the {timeutil.week_label(wk)}",
-            value=(
-                "Reminders: "
-                + ", ".join(timeutil.discord_ts(t) for t in settings.reminder_times(wk, self.bot.tz))
-                + f"\nDeadline: {timeutil.discord_ts(settings.deadline_at(wk, self.bot.tz))}"
-            ),
-            inline=False,
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    def week_start(self) -> date:
+        now = timeutil.now_utc()
+        if self.week == "current":
+            return timeutil.current_week_start(now, self.cog.bot.tz)
+        return timeutil.upcoming_week_start(now, self.cog.bot.tz)
 
-    @app_commands.command(name="damage_logs", description="View or change damage log settings")
-    @app_commands.describe(
-        channel="Channel where hosts post damage logs (default: #queen-logs)",
-        average_runs="How many of a character's most recent runs to average",
-    )
-    async def damage_config(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel | None = None,
-        average_runs: app_commands.Range[int, 1, 50] | None = None,
-    ):
-        conn = self.bot.conn
-        if channel:
-            db.set_boss_setting(conn, "queen_logs_channel_id", str(channel.id))
-        if average_runs:
-            db.set_boss_setting(conn, "damage_average_runs", str(average_runs))
-            damage.recompute_all(conn)
-        channel_id = logs_channel_id(self.bot)
-        runs = damage.average_runs(conn)
-        logs = conn.execute("SELECT COUNT(*) FROM damage_logs WHERE boss_id = ?", (db.CQ,)).fetchone()[0]
-        embed = discord.Embed(
-            title="Damage log settings",
+    def embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="Host tools",
             description=(
-                f"**Channel:** {f'<#{channel_id}>' if channel_id else f'any channel named #{DEFAULT_CHANNEL_NAME}'}\n"
-                f"**Damage = average of the last {runs} run(s)**, each scaled to "
-                f"{damage.NORMALIZE_MINUTES:g} minutes, in billions\n"
-                f"**Log timezone:** {self.bot.config.log_timezone.key}\n"
-                f"**Runs recorded:** {logs}"
+                f"Week: **{timeutil.week_label(self.week_start())}** (change it with the dropdown)\n\n"
+                "📋 **Status**: who has checked in, and recent character status changes\n"
+                "📊 **Availability**: everyone's availability per squad (counts and names)\n"
+                "🧾 **Prep Roster**: one squad's characters at each level, for slotting\n"
+                "👤 **Player availability**: one player's availability\n"
+                "📈 **Damage history**: a character's recorded runs and damage\n"
+                "📣 **Post reminder now**: post next week's reminder in the CQ channel"
             ),
             color=EMBED_COLOR,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(
-        name="squad_time", description="Change a squad's time for next week or permanently, or reset next week's change"
-    )
-    @app_commands.describe(
-        squad="Squad number",
-        day="Day of the week",
-        time="24h time in the host timezone, e.g. 21:30",
-        permanent="Also change the recurring schedule for all future weeks",
-        reset="Undo next week's change: back to the recurring schedule (day and time not needed)",
-    )
-    @app_commands.choices(day=DAY_CHOICES)
-    async def squad_time(
-        self,
-        interaction: discord.Interaction,
-        squad: app_commands.Range[int, 1, 99],
-        day: app_commands.Choice[int] | None = None,
-        time: str | None = None,
-        permanent: bool = False,
-        reset: bool = False,
-    ):
-        wk = timeutil.upcoming_week_start(timeutil.now_utc(), self.bot.tz)
-        conn = self.bot.conn
-        if reset:
-            if day or time or permanent:
-                await interaction.response.send_message(
-                    "`reset` puts the squad back on its recurring schedule; leave out day, time and permanent.",
-                    ephemeral=True,
-                )
-                return
-            db.clear_squad_override(conn, wk, squad)
-            await interaction.response.send_message(
-                f"✅ Squad {squad} is back on the recurring schedule for the {timeutil.week_label(wk)}.",
-                ephemeral=True,
-            )
-            return
-        if day is None or not time:
-            await interaction.response.send_message(
-                "Give a `day` and `time` (or `reset: True` to undo next week's change).", ephemeral=True
-            )
-            return
-        try:
-            hhmm = _valid_hhmm(time)
-        except ValueError:
-            await interaction.response.send_message("Time must look like `21:30`.", ephemeral=True)
-            return
-        if permanent:
-            db.set_squad_template(conn, squad, day.value, hhmm)
-            db.clear_squad_override(conn, wk, squad)
-            scope = "every week"
-        else:
-            if squad not in db.squad_numbers(conn):
-                await interaction.response.send_message(
-                    f"Squad {squad} isn't on the schedule. Use `permanent: True` to add it.", ephemeral=True
-                )
-                return
-            db.set_squad_override(conn, wk, squad, timeutil.at_weekday(wk, day.value, hhmm, self.bot.tz))
-            scope = f"the {timeutil.week_label(wk)} only"
-        starts = timeutil.at_weekday(wk, day.value, hhmm, self.bot.tz)
+    def _rebuild(self) -> None:
+        self.clear_items()
+        week = discord.ui.Select(
+            options=[discord.SelectOption(label=label, value=v, default=v == self.week) for v, label in self.WEEKS.items()],
+            row=0,
+        )
+        week.callback = self._pick_week
+        self.add_item(week)
+        cog = self.cog
+        buttons = [
+            ("Status", "📋", discord.ButtonStyle.primary, 1, lambda i: cog.status(i, self.week_start())),
+            ("Availability", "📊", discord.ButtonStyle.primary, 1, lambda i: cog.all_availability(i, self.week_start())),
+            ("Prep Roster", "🧾", discord.ButtonStyle.primary, 1, lambda i: cog.prep_roster(i, self.week_start())),
+            ("Player availability", "👤", discord.ButtonStyle.secondary, 1,
+             lambda i: i.response.send_modal(PlayerAvailabilityModal(self))),
+            ("Damage history", "📈", discord.ButtonStyle.secondary, 2,
+             lambda i: i.response.send_modal(DamageHistoryModal(self))),
+            ("Post reminder now", "📣", discord.ButtonStyle.danger, 2, self._confirm_reminder),
+        ]
+        for label, emoji, style, row, action in buttons:
+            button = discord.ui.Button(label=label, emoji=emoji, style=style, row=row)
+            button.callback = action
+            self.add_item(button)
+
+    async def _confirm_reminder(self, interaction: discord.Interaction) -> None:
+        """Asks first, since the reminder pings the player role in a public channel."""
+        channel = self.cog.reminder_channel(interaction)
+        where = getattr(channel, "mention", None) or "this channel"
+        wk = timeutil.upcoming_week_start(timeutil.now_utc(), self.cog.bot.tz)
+        confirm = discord.ui.View(timeout=300)
+        post = discord.ui.Button(label="Post now", emoji="📣", style=discord.ButtonStyle.danger)
+
+        async def post_now(button_interaction: discord.Interaction) -> None:
+            confirm.stop()
+            await self.cog.remind_now(button_interaction)
+
+        post.callback = post_now
+        confirm.add_item(post)
         await interaction.response.send_message(
-            f"✅ Squad {squad} is now {day.name} {hhmm} ({self.bot.tz.key}) = {timeutil.discord_ts(starts)} for {scope}.",
+            f"Post the reminder for the **{timeutil.week_label(wk)}** in {where} now? It pings the player role.",
+            view=confirm,
             ephemeral=True,
         )
 
-    @app_commands.command(name="squad_remove", description="Permanently remove a squad from the schedule")
-    async def squad_remove(self, interaction: discord.Interaction, squad: int):
-        if squad not in db.squad_numbers(self.bot.conn):
-            await interaction.response.send_message(f"Squad {squad} isn't on the schedule.", ephemeral=True)
+    async def _pick_week(self, interaction: discord.Interaction) -> None:
+        self.week = interaction.data["values"][0]
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
+class PlayerAvailabilityModal(discord.ui.Modal):
+    def __init__(self, panel: HostPanel):
+        super().__init__(title="Player availability", timeout=900)
+        self.panel = panel
+        self.player = discord.ui.TextInput(max_length=100, placeholder="Name, Discord username, or one of their characters")
+        self.add_item(discord.ui.Label(
+            text="Player", component=self.player, description=f"For the {timeutil.week_label(panel.week_start())}"
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            player = find_player(self.panel.cog.bot.conn, self.player.value)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
             return
-        db.delete_squad(self.bot.conn, squad)
-        await interaction.response.send_message(f"🗑️ Removed Squad {squad} from the schedule.", ephemeral=True)
+        await self.panel.cog.player_availability(interaction, player, self.panel.week_start())
+
+
+class DamageHistoryModal(discord.ui.Modal):
+    def __init__(self, panel: HostPanel):
+        super().__init__(title="Damage history", timeout=900)
+        self.panel = panel
+        self.character = discord.ui.TextInput(max_length=50)
+        self.add_item(discord.ui.Label(text="In-game name", component=self.character))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.panel.cog.damage_history(interaction, self.character.value)
+
+
+# --------------------------------------------------------------------------- /cq_config
+
+# One command, /cq_config, shows the CQ settings with a button per setting; each button opens a
+# pop-up with that setting's fields, filled in with the current values. The save functions below
+# do the work (and are what the tests call); the pop-ups only collect and check the input.
+
+
+def reminder_settings_embed(bot: MonkeyBot) -> discord.Embed:
+    settings = reminders.load(bot.conn, bot.config.cq_channel_id)
+    wk = timeutil.upcoming_week_start(timeutil.now_utc(), bot.tz)
+    embed = discord.Embed(title="⏰ Reminders", description=settings.describe(bot.tz), color=EMBED_COLOR)
+    embed.add_field(
+        name=f"For the {timeutil.week_label(wk)}",
+        value=(
+            "Reminders: "
+            + ", ".join(timeutil.discord_ts(t) for t in settings.reminder_times(wk, bot.tz))
+            + f"\nDeadline: {timeutil.discord_ts(settings.deadline_at(wk, bot.tz))}"
+        ),
+        inline=False,
+    )
+    return embed
+
+
+def damage_settings_embed(bot: MonkeyBot) -> discord.Embed:
+    conn = bot.conn
+    channel_id = logs_channel_id(bot)
+    logs = conn.execute("SELECT COUNT(*) FROM damage_logs WHERE boss_id = ?", (db.CQ,)).fetchone()[0]
+    return discord.Embed(
+        title="📊 Damage logs",
+        description=(
+            f"**Channel:** {f'<#{channel_id}>' if channel_id else f'any channel named #{DEFAULT_CHANNEL_NAME}'}\n"
+            f"**Damage = average of the last {damage.average_runs(conn)} run(s)**, each scaled to "
+            f"{damage.NORMALIZE_MINUTES:g} minutes, in billions\n"
+            f"**Log timezone:** {bot.config.log_timezone.key}\n"
+            f"**Runs recorded:** {logs}"
+        ),
+        color=EMBED_COLOR,
+    )
+
+
+def save_reminder_settings(
+    bot: MonkeyBot, *, channel_id: int | None, weekdays: list[int], remind_time: str, deadline_weekday: int,
+    deadline_time: str,
+) -> str:
+    """Raises ValueError for a time that isn't HH:MM. A channel of None keeps the current one."""
+    conn = bot.conn
+    before = reminders.load(conn, bot.config.cq_channel_id)
+    remind_time, deadline_time = _valid_hhmm(remind_time), _valid_hhmm(deadline_time)
+    if not weekdays:
+        raise ValueError("pick at least one reminder day")
+    if channel_id:
+        db.set_boss_setting(conn, "cq_channel_id", str(channel_id))
+    db.set_boss_setting(conn, "reminder_weekdays", ",".join(map(str, sorted(set(weekdays)))))
+    db.set_boss_setting(conn, "reminder_time", remind_time)
+    db.set_boss_setting(conn, "deadline_weekday", str(deadline_weekday))
+    db.set_boss_setting(conn, "deadline_time", deadline_time)
+    if sorted(set(weekdays)) != before.reminder_weekdays or remind_time != before.reminder_time:
+        # A new schedule only affects future reminders; don't post one whose new time already passed.
+        mark_latest_due_as_sent(bot)
+    return "✅ Saved the reminder settings."
+
+
+def set_reminders_enabled(bot: MonkeyBot, enabled: bool) -> str:
+    db.set_boss_setting(bot.conn, "reminder_enabled", "1" if enabled else "0")
+    return "🔔 Automatic reminders are on." if enabled else "🔕 Automatic reminders are off."
+
+
+def save_damage_settings(bot: MonkeyBot, *, channel_id: int | None, average_runs: int) -> str:
+    """A channel of None keeps the current one."""
+    conn = bot.conn
+    if not 1 <= average_runs <= 50:
+        raise ValueError("runs to average must be between 1 and 50")
+    if channel_id:
+        db.set_boss_setting(conn, "queen_logs_channel_id", str(channel_id))
+    if average_runs != damage.average_runs(conn):
+        db.set_boss_setting(conn, "damage_average_runs", str(average_runs))
+        damage.recompute_all(conn)
+    return "✅ Saved the damage log settings."
+
+
+SQUAD_TIME_ACTIONS = {
+    "week": "Next week only",
+    "permanent": "Every week (the recurring schedule)",
+    "reset": "Reset next week back to the recurring schedule",
+}
+
+
+def change_squad_time(bot: MonkeyBot, squad: int, action: str, day: int | None, time: str | None) -> str:
+    """action: 'week' (next week only), 'permanent' (also adds a new squad), or 'reset' (undo next
+    week's change). Raises ValueError with a message for the host."""
+    wk = timeutil.upcoming_week_start(timeutil.now_utc(), bot.tz)
+    conn = bot.conn
+    if action == "reset":
+        db.clear_squad_override(conn, wk, squad)
+        return f"✅ Squad {squad} is back on the recurring schedule for the {timeutil.week_label(wk)}."
+    if day is None or not time:
+        raise ValueError("Pick a day and enter a time (or choose Reset to undo next week's change).")
+    try:
+        hhmm = _valid_hhmm(time)
+    except ValueError:
+        raise ValueError("Time must look like `21:30`.") from None
+    if action == "permanent":
+        db.set_squad_template(conn, squad, day, hhmm)
+        db.clear_squad_override(conn, wk, squad)
+        scope = "every week"
+    else:
+        if squad not in db.squad_numbers(conn):
+            raise ValueError(f"Squad {squad} isn't on the schedule. Choose Every week to add it.")
+        db.set_squad_override(conn, wk, squad, timeutil.at_weekday(wk, day, hhmm, bot.tz))
+        scope = f"the {timeutil.week_label(wk)} only"
+    starts = timeutil.at_weekday(wk, day, hhmm, bot.tz)
+    return (
+        f"✅ Squad {squad} is now {timeutil.WEEKDAYS[day]} {hhmm} ({bot.tz.key}) = {timeutil.discord_ts(starts)} "
+        f"for {scope}."
+    )
+
+
+def remove_squads(bot: MonkeyBot, numbers: list[int]) -> str:
+    existing = set(db.squad_numbers(bot.conn))
+    removed = sorted(n for n in numbers if n in existing)
+    for n in removed:
+        db.delete_squad(bot.conn, n)
+    if not removed:
+        return "Nothing removed: those squads aren't on the schedule."
+    return f"🗑️ Removed {', '.join(f'Squad {n}' for n in removed)} from the schedule."
+
+
+async def import_roster_file(bot: MonkeyBot, interaction: discord.Interaction, file: discord.Attachment) -> None:
+    """Refresh characters, squads and slots from the roster CSV."""
+    if not file.filename.lower().endswith(".csv") or file.size > 5_000_000:
+        await interaction.response.send_message("Please upload the roster as a .csv file (under 5 MB).", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        text = (await file.read()).decode("utf-8-sig")
+        result = importer.import_roster(bot.conn, text)
+    except (ValueError, UnicodeDecodeError) as e:
+        await interaction.followup.send(f"❌ Import failed: {e}", ephemeral=True)
+        return
+    await interaction.followup.send(
+        "✅ Import complete. Player statuses and availability that players set in the bot were not changed.\n"
+        f"```\n{result.summary()[:1800]}\n```",
+        ephemeral=True,
+    )
+
+
+def _day_options(selected: set[int] = frozenset()) -> list[discord.SelectOption]:
+    return [discord.SelectOption(label=d, value=str(i), default=i in selected) for i, d in enumerate(timeutil.WEEKDAYS)]
+
+
+def _labelled(text: str, component, description: str | None = None) -> discord.ui.Label:
+    return discord.ui.Label(text=text, component=component, description=description)
+
+
+def _chosen_channel_id(select: discord.ui.ChannelSelect) -> int | None:
+    return select.values[0].id if select.values else None
+
+
+class ConfigPanel(discord.ui.View):
+    """The /cq_config message: current settings, and a button per setting. Every change re-renders it."""
+
+    def __init__(self, bot: MonkeyBot, user_id: int):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.user_id = user_id
+        self._rebuild()
+
+    def embeds(self) -> list[discord.Embed]:
+        wk = timeutil.upcoming_week_start(timeutil.now_utc(), self.bot.tz)
+        return [
+            reminder_settings_embed(self.bot),
+            damage_settings_embed(self.bot),
+            squad_times_embed(self.bot, wk, get_squad_order(self.bot.conn, self.user_id), mark_moved=True),
+        ]
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        enabled = reminders.load(self.bot.conn, self.bot.config.cq_channel_id).enabled
+        buttons = [
+            ("Reminders", "⏰", discord.ButtonStyle.primary, lambda: RemindersModal(self)),
+            ("Damage logs", "📊", discord.ButtonStyle.primary, lambda: DamageLogsModal(self)),
+            ("Squad time", "🕒", discord.ButtonStyle.primary, lambda: SquadTimeModal(self)),
+            (
+                "Remove squads", "🗑️", discord.ButtonStyle.danger,
+                lambda: RemoveSquadsModal(self) if db.squad_numbers(self.bot.conn) else "There are no squads to remove.",
+            ),
+        ]
+        for label, emoji, style, make in buttons:
+            button = discord.ui.Button(label=label, emoji=emoji, style=style, row=0)
+            button.callback = self._opener(make)
+            self.add_item(button)
+        toggle = discord.ui.Button(
+            label="Turn automatic reminders off" if enabled else "Turn automatic reminders on",
+            emoji="🔕" if enabled else "🔔",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        toggle.callback = self._toggle_reminders
+        self.add_item(toggle)
+        import_button = discord.ui.Button(label="Import roster", emoji="📥", style=discord.ButtonStyle.secondary, row=1)
+        import_button.callback = self._opener(lambda: ImportRosterModal(self.bot))
+        self.add_item(import_button)
+
+    def _opener(self, make):
+        async def open_modal(interaction: discord.Interaction) -> None:
+            if isinstance(modal := make(), str):  # nothing to edit
+                await interaction.response.send_message(modal, ephemeral=True)
+            else:
+                await interaction.response.send_modal(modal)
+
+        return open_modal
+
+    async def show(self, interaction: discord.Interaction, note: str | None = None) -> None:
+        """Re-render this message in place (after a pop-up or button on it)."""
+        self._rebuild()
+        await interaction.response.edit_message(content=note, embeds=self.embeds(), view=self)
+
+    async def _toggle_reminders(self, interaction: discord.Interaction) -> None:
+        enabled = reminders.load(self.bot.conn, self.bot.config.cq_channel_id).enabled
+        await self.show(interaction, set_reminders_enabled(self.bot, not enabled))
+
+
+class ImportRosterModal(discord.ui.Modal):
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Import the roster", timeout=900)
+        self.bot = bot
+        self.file = discord.ui.FileUpload(max_values=1)
+        self.add_item(discord.ui.TextDisplay(
+            "Upload the CSV export of the CQ Roster sheet. It refreshes characters, squads and slots; "
+            "player statuses and the availability players set in the bot aren't changed."
+        ))
+        self.add_item(discord.ui.Label(text="Roster CSV", component=self.file, description=".csv, under 5 MB"))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await import_roster_file(self.bot, interaction, self.file.values[0])
+
+
+class RemindersModal(discord.ui.Modal):
+    def __init__(self, panel: ConfigPanel):
+        super().__init__(title="Reminder settings", timeout=900)
+        self.panel = panel
+        bot = panel.bot
+        current = reminders.load(bot.conn, bot.config.cq_channel_id)
+        tz = bot.tz.key
+        self.channel = discord.ui.ChannelSelect(
+            channel_types=[discord.ChannelType.text], required=False, min_values=0,
+            default_values=[discord.Object(id=current.channel_id)] if current.channel_id else [],
+        )
+        self.days = discord.ui.Select(options=_day_options(set(current.reminder_weekdays)), min_values=1, max_values=7)
+        self.remind_time = discord.ui.TextInput(default=current.reminder_time, max_length=5, placeholder="18:00")
+        self.deadline_day = discord.ui.Select(options=_day_options({current.deadline_weekday}))
+        self.deadline_time = discord.ui.TextInput(default=current.deadline_time, max_length=5, placeholder="12:00")
+        self.add_item(_labelled("Channel", self.channel, "Where the weekly reminder is posted (the CQ channel)"))
+        self.add_item(_labelled("Reminder days", self.days, "Pick one or more days"))
+        self.add_item(_labelled("Reminder time", self.remind_time, f"24h, {tz}, e.g. 18:00"))
+        self.add_item(_labelled("Deadline day", self.deadline_day, "In the week before the squads run"))
+        self.add_item(_labelled("Deadline time", self.deadline_time, f"24h, {tz}, e.g. 12:00"))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = save_reminder_settings(
+                self.panel.bot,
+                channel_id=_chosen_channel_id(self.channel),
+                weekdays=[int(v) for v in self.days.values],
+                remind_time=self.remind_time.value,
+                deadline_weekday=int(self.deadline_day.values[0]),
+                deadline_time=self.deadline_time.value,
+            )
+        except ValueError:
+            await interaction.response.send_message(
+                "Nothing saved: times must look like `18:00`, with at least one reminder day.", ephemeral=True
+            )
+            return
+        await self.panel.show(interaction, note)
+
+
+class DamageLogsModal(discord.ui.Modal):
+    def __init__(self, panel: ConfigPanel):
+        super().__init__(title="Damage log settings", timeout=900)
+        self.panel = panel
+        bot = panel.bot
+        channel_id = logs_channel_id(bot)
+        self.channel = discord.ui.ChannelSelect(
+            channel_types=[discord.ChannelType.text], required=False, min_values=0,
+            default_values=[discord.Object(id=channel_id)] if channel_id else [],
+        )
+        self.runs = discord.ui.TextInput(default=str(damage.average_runs(bot.conn)), max_length=2, placeholder="3")
+        self.add_item(_labelled(
+            "Channel", self.channel, f"Where hosts post damage logs. Empty: any channel named #{DEFAULT_CHANNEL_NAME}"
+        ))
+        self.add_item(_labelled("Runs to average", self.runs, "How many of a character's most recent runs (1–50)"))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = save_damage_settings(
+                self.panel.bot, channel_id=_chosen_channel_id(self.channel), average_runs=int(self.runs.value)
+            )
+        except ValueError:
+            await interaction.response.send_message(
+                "Nothing saved: runs to average must be a number from 1 to 50.", ephemeral=True
+            )
+            return
+        await self.panel.show(interaction, note)
+
+
+class SquadTimeModal(discord.ui.Modal):
+    MAX_LISTED = 24  # a dropdown holds 25 options: the squads plus "New squad"
+
+    def __init__(self, panel: ConfigPanel):
+        super().__init__(title="Change a squad's time", timeout=900)
+        self.panel = panel
+        bot = panel.bot
+        template = db.list_squad_template(bot.conn)
+        new_number = max((r["number"] for r in template), default=0) + 1
+        if len(template) <= self.MAX_LISTED:
+            options = [
+                discord.SelectOption(
+                    label=f"Squad {r['number']}", value=str(r["number"]),
+                    description=f"Usually {timeutil.WEEKDAYS[r['weekday']]} {r['time']} ({bot.tz.key})",
+                )
+                for r in sorted(template, key=lambda r: r["number"])
+            ]
+            options.append(discord.SelectOption(
+                label=f"New squad {new_number}", value=str(new_number), emoji="➕",
+                description="Choose Every week below to add it",
+            ))
+            self.squad = discord.ui.Select(options=options)
+        else:  # too many squads for a dropdown
+            self.squad = discord.ui.TextInput(max_length=2, placeholder=f"e.g. 3 (or {new_number} for a new squad)")
+        self.day = discord.ui.Select(options=_day_options(), required=False, min_values=0)
+        self.time = discord.ui.TextInput(required=False, max_length=5, placeholder="21:30")
+        self.action = discord.ui.RadioGroup(options=[
+            discord.RadioGroupOption(label=label, value=value, default=value == "week")
+            for value, label in SQUAD_TIME_ACTIONS.items()
+        ])
+        self.add_item(_labelled("Squad", self.squad))
+        self.add_item(_labelled("Day", self.day, "Not needed for Reset"))
+        self.add_item(_labelled("Time", self.time, f"24h, {bot.tz.key}, e.g. 21:30. Not needed for Reset"))
+        self.add_item(_labelled("Change", self.action))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = self.squad.values[0] if isinstance(self.squad, discord.ui.Select) else self.squad.value.strip()
+        try:
+            if not raw.isdigit() or not 1 <= int(raw) <= 99:
+                raise ValueError("The squad must be a number from 1 to 99.")
+            note = change_squad_time(
+                self.panel.bot, int(raw), self.action.value or "week",
+                int(self.day.values[0]) if self.day.values else None, self.time.value,
+            )
+        except ValueError as e:
+            await interaction.response.send_message(f"Nothing saved: {e}", ephemeral=True)
+            return
+        await self.panel.show(interaction, note)
+
+
+class RemoveSquadsModal(discord.ui.Modal):
+    def __init__(self, panel: ConfigPanel):
+        super().__init__(title="Remove squads", timeout=900)
+        self.panel = panel
+        bot = panel.bot
+        template = sorted(db.list_squad_template(bot.conn), key=lambda r: r["number"])[:25]
+        self.squads = discord.ui.Select(
+            options=[
+                discord.SelectOption(
+                    label=f"Squad {r['number']}", value=str(r["number"]),
+                    description=f"{timeutil.WEEKDAYS[r['weekday']]} {r['time']} ({bot.tz.key})",
+                )
+                for r in template
+            ],
+            min_values=1,
+            max_values=max(1, len(template)),
+        )
+        self.add_item(discord.ui.TextDisplay(
+            "Removes the squads from the schedule permanently, for every week. This can't be undone; to add a "
+            "squad back, use Squad time with Every week."
+        ))
+        self.add_item(_labelled("Squads to remove", self.squads, "Pick one or more"))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.panel.show(interaction, remove_squads(self.panel.bot, [int(v) for v in self.squads.values]))
+
+
+class ConfigCog(HostOnly, commands.Cog):
+    @app_commands.command(name="cq_config", description="CQ settings: reminders, damage logs, squad schedule, roster import")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def cq_config(self, interaction: discord.Interaction):
+        panel = ConfigPanel(self.bot, interaction.user.id)
+        await interaction.response.send_message(embeds=panel.embeds(), view=panel, ephemeral=True)
 
 
 # --------------------------------------------------------------------------- /player
 
+# Like /character: one command, /player, shows Add / Change / Link buttons, each opening a pop-up.
+# Players are typed by name and matched on submit (find_player, below in the /character section);
+# Discord accounts use Discord's own member picker, which can search. `/player change:` (search as
+# you type) opens a player's edit pop-up straight away.
 
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.guild_only()
-class PlayerAdminCog(HostOnly, commands.GroupCog, group_name="player", group_description="Add and change players on the roster"):
-    @app_commands.command(name="add", description="Add a new player to the roster")
-    @app_commands.describe(
-        name="The name the player goes by",
-        member="Their Discord account (recommended)",
-        username="Their Discord username, if they're not in the server yet (links when they first use the bot)",
-        status="Defaults to Active",
+PLAYER_STATUS_OPTIONS = [("active", "Active"), ("inactive", "Inactive")]
+
+
+def add_player_entry(bot: MonkeyBot, *, name: str, member, username: str | None, status: str = "active") -> str:
+    """`member`: their Discord account (from the member picker), or None with `username` for someone
+    not in the server yet (linked when they first use the bot). Raises ValueError (nothing saved)."""
+    conn = bot.conn
+    name = name.strip()
+    if not name:
+        raise ValueError("Enter the player's name.")
+    if member and (existing := db.get_player_by_discord_id(conn, member.id)):
+        raise ValueError(f"{member.mention} is already on the roster as **{existing.display}**.")
+    username = (username or "").strip().lstrip("@")
+    handle = f"@{member.name}" if member else (f"@{username}" if username else None)
+    if handle and (existing := db.get_player_by_handle(conn, handle)):
+        raise ValueError(f"**{handle}** is already on the roster as **{existing.display}**.")
+    player = db.create_player(
+        conn, name=name, discord_handle=handle, discord_id=member.id if member else None, status=status
     )
-    @app_commands.choices(status=STATUS_CHOICES)
-    async def add_player(
-        self,
-        interaction: discord.Interaction,
-        name: str,
-        member: discord.Member | None = None,
-        username: str | None = None,
-        status: app_commands.Choice[str] | None = None,
-    ):
-        conn = self.bot.conn
-        if member and (existing := db.get_player_by_discord_id(conn, member.id)):
-            await interaction.response.send_message(
-                f"{member.mention} is already on the roster as **{existing.display}**.", ephemeral=True
-            )
-            return
-        handle = f"@{member.name}" if member else (f"@{username.strip().lstrip('@')}" if username else None)
-        if handle and (existing := db.get_player_by_handle(conn, handle)):
-            await interaction.response.send_message(
-                f"**{handle}** is already on the roster as **{existing.display}**.", ephemeral=True
-            )
-            return
-        player = db.create_player(
-            conn,
-            name=name.strip(),
-            discord_handle=handle,
-            discord_id=member.id if member else None,
-            status=status.value if status else "active",
-        )
-        await interaction.response.send_message(
-            f"✅ Added **{player.display}** ({player.status}). Next: `/character add` for each of their "
-            "characters. They set their usual availability with Update my default in `/cq availability`.",
-            ephemeral=True,
+    return (
+        f"✅ Added **{player.display}** ({player.status}). Next: `/character` > Add for each of their "
+        "characters. They set their usual availability with Change default availability in `/cq availability`."
+    )
+
+
+def edit_player_entry(bot: MonkeyBot, player: db.Player, *, name: str, status: str) -> str:
+    """Saves only what changed."""
+    changes = []
+    name = name.strip()
+    if name and name != player.name:
+        db.set_player_name(bot.conn, player.id, name)
+        changes.append(f"renamed to **{name}**")
+    if status != player.status:
+        db.set_player_status(bot.conn, player.id, status)
+        changes.append(f"status **{dict(PLAYER_STATUS_OPTIONS)[status]}**")
+    if not changes:
+        return f"Nothing changed for **{player.display}**."
+    return f"✅ **{player.display}**: {', '.join(changes)}."
+
+
+def link_player_entry(bot: MonkeyBot, *, player: str, member) -> str:
+    p = find_player(bot.conn, player)
+    db.link_discord(bot.conn, p.id, member.id, f"@{member.name}")
+    return f"🔗 Linked **{p.name}** to {member.mention}."
+
+
+def player_card(bot: MonkeyBot, player: db.Player) -> discord.Embed:
+    account = player.mention if player.discord_id else (
+        f"{player.discord_handle} (not linked yet: links when they first use the bot)" if player.discord_handle
+        else "none (use Link)"
+    )
+    characters = db.list_characters(bot.conn, player.id)
+    return discord.Embed(
+        title=player.name,
+        description=(
+            f"**Discord:** {account}\n**Status:** {dict(PLAYER_STATUS_OPTIONS)[player.status]}\n"
+            f"**Characters:** {', '.join(c['ign'] for c in characters) or 'none'}"
+        )[:4000],
+        color=EMBED_COLOR,
+    )
+
+
+def _player_status_select(current: str) -> discord.ui.Select:
+    return discord.ui.Select(options=[
+        discord.SelectOption(label=label, value=value, default=value == current) for value, label in PLAYER_STATUS_OPTIONS
+    ])
+
+
+class PlayerPanel(discord.ui.View):
+    """The /player message: Add, Change and Link."""
+
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(timeout=900)
+        self.bot = bot
+        for label, emoji, style, make in [
+            ("Add", "➕", discord.ButtonStyle.success, lambda: AddPlayerModal(self.bot)),
+            ("Change", "✏️", discord.ButtonStyle.primary, lambda: FindPlayerModal(self.bot)),
+            ("Link", "🔗", discord.ButtonStyle.secondary, lambda: LinkPlayerModal(self.bot)),
+        ]:
+            button = discord.ui.Button(label=label, emoji=emoji, style=style)
+            button.callback = CharacterPanel._opener(make)
+            self.add_item(button)
+
+    def embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="Players",
+            description=(
+                "➕ **Add** a player to the roster.\n"
+                "✏️ **Change** a player's name or status.\n"
+                "🔗 **Link** a roster player to their Discord account.\n\n"
+                "Type player names; they're matched against the roster when you submit.\n"
+                "Tip: `/player change:` plus a name (search as you type) opens a player's edit pop-up straight away."
+            ),
+            color=EMBED_COLOR,
         )
 
-    @app_commands.command(name="edit", description="Rename a player or change their status")
-    @app_commands.describe(name="New name", status="Active or inactive")
-    @app_commands.choices(status=STATUS_CHOICES)
-    @app_commands.autocomplete(player=player_autocomplete)
-    async def edit_player(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-        name: str | None = None,
-        status: app_commands.Choice[str] | None = None,
-    ):
-        if not name and not status:
-            await interaction.response.send_message("Give a new `name`, a `status`, or both.", ephemeral=True)
-            return
-        if not (p := await self._get_player(interaction, player)):
-            return
-        changes = []
-        if name and name.strip():
-            db.set_player_name(self.bot.conn, p.id, name.strip())
-            changes.append(f"renamed to **{name.strip()}**")
-        if status:
-            db.set_player_status(self.bot.conn, p.id, status.value)
-            changes.append(f"status **{status.name}**")
-        await interaction.response.send_message(f"✅ **{p.display}**: {', '.join(changes)}.", ephemeral=True)
 
-    @app_commands.command(name="link", description="Link a roster player to a Discord member")
-    @app_commands.autocomplete(player=player_autocomplete)
-    async def link(self, interaction: discord.Interaction, player: str, member: discord.Member):
-        if p := await self._get_player(interaction, player):
-            db.link_discord(self.bot.conn, p.id, member.id, f"@{member.name}")
-            await interaction.response.send_message(f"🔗 Linked **{p.name}** to {member.mention}.", ephemeral=True)
+class AddPlayerModal(discord.ui.Modal):
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Add a player", timeout=900)
+        self.bot = bot
+        self.name = discord.ui.TextInput(max_length=100, placeholder="The name the player goes by")
+        self.member = discord.ui.UserSelect(required=False, min_values=0)
+        self.username = discord.ui.TextInput(required=False, max_length=40, placeholder="e.g. futureplayer")
+        self.status = _player_status_select("active")
+        self.add_item(discord.ui.Label(text="Name", component=self.name))
+        self.add_item(discord.ui.Label(text="Discord account", component=self.member, description="Recommended"))
+        self.add_item(discord.ui.Label(
+            text="Discord username", component=self.username,
+            description="Only if they're not in the server yet: links when they first use the bot",
+        ))
+        self.add_item(discord.ui.Label(text="Status", component=self.status))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = add_player_entry(
+                self.bot, name=self.name.value, member=self.member.values[0] if self.member.values else None,
+                username=self.username.value, status=_value(self.status),
+            )
+        except ValueError as e:
+            await _refuse(interaction, e)
+            return
+        await interaction.response.send_message(note, ephemeral=True)
+
+
+class FindPlayerModal(discord.ui.Modal):
+    """Change, step 1: which player? Then their card with an Edit button."""
+
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Change a player", timeout=900)
+        self.bot = bot
+        self.player = discord.ui.TextInput(max_length=100, placeholder="Name, Discord username, or one of their characters")
+        self.add_item(discord.ui.Label(text="Player", component=self.player))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            player = find_player(self.bot.conn, self.player.value)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        view = PlayerEditView(self.bot, player.id)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class PlayerEditView(discord.ui.View):
+    """Change, step 2: the player's details and an Edit button that opens the filled-in pop-up."""
+
+    def __init__(self, bot: MonkeyBot, player_id: int):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.player_id = player_id
+        button = discord.ui.Button(label="Edit", emoji="✏️", style=discord.ButtonStyle.primary)
+        button.callback = self._edit
+        self.add_item(button)
+
+    def player(self) -> db.Player | None:
+        return db.get_player(self.bot.conn, self.player_id)
+
+    def embed(self) -> discord.Embed:
+        return player_card(self.bot, self.player())
+
+    async def _edit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(EditPlayerModal(self, self.player()))
+
+
+class EditPlayerModal(discord.ui.Modal):
+    """`from_card`: opened from the player's card (refreshed on save); otherwise (from /player change:)
+    the result is sent as a new message."""
+
+    def __init__(self, view: PlayerEditView, player: db.Player, *, from_card: bool = True):
+        super().__init__(title=f"Change {player.name}"[:45], timeout=900)
+        self.view = view
+        self.player = player
+        self.from_card = from_card
+        self.name = discord.ui.TextInput(default=player.name, max_length=100)
+        self.status = _player_status_select(player.status)
+        self.add_item(discord.ui.Label(text="Name", component=self.name))
+        self.add_item(discord.ui.Label(
+            text="Status", component=self.status, description="Only active players are counted in check-ins"
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        note = edit_player_entry(self.view.bot, self.player, name=self.name.value, status=_value(self.status))
+        if self.from_card:
+            await interaction.response.edit_message(content=note, embed=self.view.embed(), view=self.view)
+        else:
+            await interaction.response.send_message(note, embed=self.view.embed(), view=self.view, ephemeral=True)
+
+
+class LinkPlayerModal(discord.ui.Modal):
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Link a player to Discord", timeout=900)
+        self.bot = bot
+        self.player = discord.ui.TextInput(max_length=100, placeholder="Name, Discord username, or one of their characters")
+        self.member = discord.ui.UserSelect()
+        self.add_item(discord.ui.Label(text="Player", component=self.player))
+        self.add_item(discord.ui.Label(text="Discord account", component=self.member))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = link_player_entry(self.bot, player=self.player.value, member=self.member.values[0])
+        except ValueError as e:
+            await _refuse(interaction, e)
+            return
+        await interaction.response.send_message(note, ephemeral=True)
+
+
+class PlayerAdminCog(HostOnly, commands.Cog):
+    @app_commands.command(name="player", description="Add, change or link players on the roster")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    @app_commands.describe(change="A player to change: opens their edit pop-up straight away")
+    @app_commands.autocomplete(change=player_autocomplete)
+    async def player(self, interaction: discord.Interaction, change: str | None = None):
+        if change is None:
+            panel = PlayerPanel(self.bot)
+            await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+            return
+        # the suggestions' values are player ids; anything typed by hand is matched like the pop-ups
+        player = db.get_player(self.bot.conn, int(change)) if change.isdigit() else None
+        if player is None:
+            try:
+                player = find_player(self.bot.conn, change)
+            except ValueError as e:
+                await interaction.response.send_message(str(e), ephemeral=True)
+                return
+        view = PlayerEditView(self.bot, player.id)
+        await interaction.response.send_modal(EditPlayerModal(view, player, from_card=False))
 
 
 # --------------------------------------------------------------------------- /character
 
+# One command, /character, shows Add / Change / Remove buttons. Pop-ups can't search and a dropdown
+# holds only 25 options, so hosts type the player or character name and it's matched on submit. The
+# functions below do the work (and are what the tests call); the pop-ups collect the input.
 
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.guild_only()
-class CharacterAdminCog(HostOnly, commands.GroupCog, group_name="character", group_description="Add, change and remove characters on the roster"):
-    @app_commands.command(name="add", description="Add a character to a player")
-    @app_commands.describe(
-        ign="In-game name", job="Job, e.g. BSP, NL, DRK", buff="Role in the squad", dmg="Damage",
-        status="Static (default), sub or inactive. Players can change it in /cq characters",
+CHARACTER_STATUS_OPTIONS = [("static", "Static (prioritize)"), ("sub", "Flex (only if needed)"), ("inactive", "Inactive (don't slot)")]
+
+
+def find_player(conn, text: str) -> db.Player:
+    """The one roster player matching `text` (name, Discord username, or one of their characters).
+    Raises ValueError with suggestions when there's no single match."""
+    text = text.strip()
+    if not text:
+        raise ValueError("Enter a player name.")
+    matches = db.search_players(conn, text, limit=25)
+    wanted = text.lower().lstrip("@")
+    exact = [p for p in matches if wanted in (p.name.lower(), (p.discord_handle or "").lower().lstrip("@"))]
+    if len(exact) == 1:
+        return exact[0]
+    if len(matches) == 1:
+        return matches[0]
+    hint = f" Did you mean: {', '.join(p.display for p in matches[:5])}?" if matches else ""
+    raise ValueError(f"No single player matches **{text}**.{hint}")
+
+
+def find_character(conn, text: str):
+    text = text.strip()
+    if not text:
+        raise ValueError("Enter a character's in-game name.")
+    if char := db.get_character(conn, text):
+        return char
+    rows = conn.execute(
+        "SELECT ign FROM characters WHERE ign LIKE ? ORDER BY ign COLLATE NOCASE LIMIT 6", (f"%{text}%",)
+    ).fetchall()
+    if len(rows) == 1:
+        return db.get_character(conn, rows[0]["ign"])
+    hint = f" Did you mean: {', '.join(r['ign'] for r in rows[:5])}?" if rows else ""
+    raise ValueError(f"No character named **{text}**.{hint}")
+
+
+def parse_dmg(text: str | None) -> float | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError("Damage must be a number, e.g. `4.2`.") from None
+    if value < 0:
+        raise ValueError("Damage can't be negative.")
+    return value
+
+
+def add_character_entry(
+    bot: MonkeyBot, *, player: str, ign: str, job: str, dmg: str | None, status: str = "static"
+) -> str:
+    """The buff comes from the job (db.JOB_BUFFS)."""
+    conn = bot.conn
+    owner = find_player(conn, player)
+    ign, job = ign.strip(), job.strip().upper()
+    if not ign:
+        raise ValueError("Enter the character's in-game name.")
+    if existing := db.get_character(conn, ign):
+        raise ValueError(
+            f"**{existing['ign']}** already exists (owned by {db.get_player(conn, existing['player_id']).display})."
+        )
+    if (buff := db.buff_for_job(job)) is None:
+        raise ValueError(f"**{job}** isn't a known job, so its buff isn't known. Pick a job from the list.")
+    db.add_character(conn, owner.id, ign, job, parse_dmg(dmg), status)
+    return f"✅ Added **{ign}** ({job}, {buff}) to **{owner.display}**, as {character_status_label(status)}."
+
+
+def edit_character_entry(
+    bot: MonkeyBot, char, *, job: str, dmg: str | None, status: str, owner: str | None, changed_by: int
+) -> str:
+    """Saves only what changed; a new job also sets the buff. Raises ValueError (nothing saved) for a
+    bad damage or owner."""
+    conn = bot.conn
+    new_dmg = parse_dmg(dmg)
+    new_job = (job or "").strip().upper()
+    job_changed = bool(new_job) and new_job != (char["job"] or "")
+    note = f" Buff: {db.buff_for_job(new_job) or '?'} (from the job)." if job_changed else ""
+    new_owner = find_player(conn, owner) if (owner or "").strip() else None
+    if new_owner and new_owner.id == char["player_id"]:
+        new_owner = None  # already theirs
+    old_owner = db.get_player(conn, char["player_id"])
+    db.update_character(
+        conn,
+        char["id"],
+        changed_by=changed_by,
+        job=new_job if job_changed else None,
+        dmg=new_dmg if new_dmg is not None and new_dmg != char["base_dmg"] else None,
+        status=status if status != char["status"] else None,
+        player_id=new_owner.id if new_owner else None,
     )
-    @app_commands.choices(buff=BUFF_CHOICES, status=CHARACTER_STATUS_CHOICES)
-    @app_commands.autocomplete(player=player_autocomplete, job=job_autocomplete)
-    async def add_character(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-        ign: str,
-        job: str,
-        buff: app_commands.Choice[str],
-        dmg: float | None = None,
-        status: app_commands.Choice[str] | None = None,
-    ):
-        if not (p := await self._get_player(interaction, player)):
-            return
-        if existing := db.get_character(self.bot.conn, ign):
-            owner = db.get_player(self.bot.conn, existing["player_id"])
-            await interaction.response.send_message(
-                f"**{existing['ign']}** already exists (owned by {owner.display}).", ephemeral=True
+    moved = f" Moved from **{old_owner.display}** to **{new_owner.display}**." if new_owner else ""
+    return f"✅ Updated **{char['ign']}**.{note}{moved}"
+
+
+def remove_characters(bot: MonkeyBot, character_ids: list[int]) -> str:
+    names = []
+    for cid in character_ids:
+        row = bot.conn.execute("SELECT ign FROM characters WHERE id = ?", (cid,)).fetchone()
+        if row:
+            db.delete_character(bot.conn, cid)
+            names.append(row["ign"])
+    if not names:
+        return "Nothing removed."
+    return f"🗑️ Removed {', '.join(f'**{n}**' for n in names)} and their damage history."
+
+
+def character_card(bot: MonkeyBot, char) -> discord.Embed:
+    owner = db.get_player(bot.conn, char["player_id"])
+    dmg = f"{char['dmg']:g}" if char["dmg"] is not None else "?"
+    base = f" (entered: {char['base_dmg']:g})" if char["base_dmg"] is not None and char["base_dmg"] != char["dmg"] else ""
+    return discord.Embed(
+        title=f"{char['ign']} ({char['job'] or '?'})",
+        description=(
+            f"**Owner:** {owner.display}\n**Buff:** {char['buff'] or '?'}\n**Damage:** {dmg}{base}\n"
+            f"**Status:** {character_status_label(char['status'])}"
+        ),
+        color=EMBED_COLOR,
+    )
+
+
+def _job_input(bot: MonkeyBot, current: str | None = None):
+    """A dropdown of the jobs (with class icons and their buff); a text box if there are more than fit."""
+    jobs = sorted(set(db.JOB_BUFFS) | set(db.known_jobs(bot.conn)) | ({current.upper()} if current else set()))
+    if not jobs or len(jobs) > 25:
+        return discord.ui.TextInput(default=current, max_length=10, placeholder="e.g. NL, DRK, BSP")
+    options = []
+    for job in jobs:
+        icon = bot.class_icons.get(job)
+        buff = db.buff_for_job(job)
+        options.append(discord.SelectOption(
+            label=job, value=job, default=job == (current or "").upper(),
+            description=f"Buff: {buff}" if buff else None,
+            emoji=discord.PartialEmoji.from_str(icon) if icon else None,
+        ))
+    return discord.ui.Select(options=options)
+
+
+def _value(component) -> str:
+    """The text typed, or the option picked, in a pop-up field."""
+    if isinstance(component, discord.ui.TextInput):
+        return component.value
+    return component.values[0] if component.values else ""
+
+
+def _status_select(current: str) -> discord.ui.Select:
+    return discord.ui.Select(options=[
+        discord.SelectOption(label=label, value=value, default=value == current)
+        for value, label in CHARACTER_STATUS_OPTIONS
+    ])
+
+
+class CharacterPanel(discord.ui.View):
+    """The /character message: Add, Change and Remove."""
+
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(timeout=900)
+        self.bot = bot
+        for label, emoji, style, make in [
+            ("Add", "➕", discord.ButtonStyle.success, lambda: AddCharacterModal(self.bot)),
+            ("Change", "✏️", discord.ButtonStyle.primary, lambda: FindCharacterModal(self.bot)),
+            ("Remove", "🗑️", discord.ButtonStyle.danger, lambda: FindPlayerToRemoveModal(self.bot)),
+        ]:
+            button = discord.ui.Button(label=label, emoji=emoji, style=style)
+            button.callback = self._opener(make)
+            self.add_item(button)
+
+    @staticmethod
+    def _opener(make):
+        async def open_modal(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(make())
+
+        return open_modal
+
+    def embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="Characters",
+            description=(
+                "➕ **Add** a character to a player.\n"
+                "✏️ **Change** a character's job, damage, status or owner.\n"
+                "🗑️ **Remove** one or more of a player's characters.\n\n"
+                "Type player and character names; they're matched against the roster when you submit.\n"
+                "Tip: `/character change:` plus a name (search as you type) opens a character's edit pop-up "
+                "straight away."
+            ),
+            color=EMBED_COLOR,
+        )
+
+
+async def _refuse(interaction: discord.Interaction, error: ValueError) -> None:
+    await interaction.response.send_message(f"Nothing saved: {error}", ephemeral=True)
+
+
+class AddCharacterModal(discord.ui.Modal):
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Add a character", timeout=900)
+        self.bot = bot
+        self.player = discord.ui.TextInput(max_length=100, placeholder="Name, Discord username, or one of their characters")
+        self.ign = discord.ui.TextInput(max_length=50)
+        self.job = _job_input(bot)
+        self.dmg = discord.ui.TextInput(required=False, max_length=10, placeholder="e.g. 4.2 (optional)")
+        self.status = _status_select("static")
+        self.add_item(discord.ui.Label(text="Player", component=self.player))
+        self.add_item(discord.ui.Label(text="In-game name", component=self.ign))
+        self.add_item(discord.ui.Label(
+            text="Job", component=self.job, description="The buff is set from the job"
+        ))
+        self.add_item(discord.ui.Label(text="Damage", component=self.dmg, description="Fallback until damage logs come in"))
+        self.add_item(discord.ui.Label(text="Status", component=self.status))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = add_character_entry(
+                self.bot, player=self.player.value, ign=self.ign.value, job=_value(self.job),
+                dmg=self.dmg.value, status=_value(self.status),
             )
+        except ValueError as e:
+            await _refuse(interaction, e)
             return
-        db.add_character(self.bot.conn, p.id, ign, job, buff.value, dmg, status.value if status else "static")
-        await interaction.response.send_message(
-            f"✅ Added **{ign.strip()}** ({job.upper()}, {buff.value}) to **{p.display}**.", ephemeral=True
+        await interaction.response.send_message(note, ephemeral=True)
+
+
+class FindCharacterModal(discord.ui.Modal):
+    """Change, step 1: which character? Then its card with an Edit button."""
+
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Change a character", timeout=900)
+        self.bot = bot
+        self.ign = discord.ui.TextInput(max_length=50)
+        self.add_item(discord.ui.Label(text="In-game name", component=self.ign, description="The character to change"))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            char = find_character(self.bot.conn, self.ign.value)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        view = CharacterEditView(self.bot, char["id"])
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class CharacterEditView(discord.ui.View):
+    """Change, step 2: the character's details and an Edit button that opens the filled-in pop-up."""
+
+    def __init__(self, bot: MonkeyBot, character_id: int):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.character_id = character_id
+        button = discord.ui.Button(label="Edit", emoji="✏️", style=discord.ButtonStyle.primary)
+        button.callback = self._edit
+        self.add_item(button)
+
+    def character(self):
+        return db.get_character_by_id(self.bot.conn, self.character_id)
+
+    def embed(self) -> discord.Embed:
+        return character_card(self.bot, self.character())
+
+    async def _edit(self, interaction: discord.Interaction) -> None:
+        if (char := self.character()) is None:
+            await interaction.response.edit_message(content="That character was removed.", embed=None, view=None)
+            return
+        await interaction.response.send_modal(EditCharacterModal(self, char))
+
+
+class EditCharacterModal(discord.ui.Modal):
+    """The filled-in edit pop-up. `from_card`: opened from the character's card (Edit button), which is
+    refreshed on save; otherwise (from /character change:) the result is sent as a new message."""
+
+    def __init__(self, view: CharacterEditView, char, *, from_card: bool = True):
+        super().__init__(title=f"Change {char['ign']}"[:45], timeout=900)
+        self.view = view
+        self.char = char
+        self.from_card = from_card
+        owner = db.get_player(view.bot.conn, char["player_id"])
+        self.job = _job_input(view.bot, char["job"])
+        self.dmg = discord.ui.TextInput(
+            required=False, max_length=10,
+            default=f"{char['base_dmg']:g}" if char["base_dmg"] is not None else None,
+        )
+        self.status = _status_select(char["status"])
+        self.owner = discord.ui.TextInput(required=False, max_length=100, placeholder=f"Leave empty to keep {owner.name}"[:100])
+        self.add_item(discord.ui.Label(text="Job", component=self.job, description="The buff is set from the job"))
+        self.add_item(discord.ui.Label(
+            text="Damage", component=self.dmg, description="Fallback value; damage from logs takes priority"
+        ))
+        self.add_item(discord.ui.Label(text="Status", component=self.status))
+        self.add_item(discord.ui.Label(text="Move to player", component=self.owner, description=f"Owner now: {owner.display}"[:100]))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            note = edit_character_entry(
+                self.view.bot, self.char, job=_value(self.job), dmg=self.dmg.value,
+                status=_value(self.status), owner=self.owner.value, changed_by=interaction.user.id,
+            )
+        except ValueError as e:
+            await _refuse(interaction, e)
+            return
+        if self.from_card:
+            await interaction.response.edit_message(content=note, embed=self.view.embed(), view=self.view)
+        else:
+            await interaction.response.send_message(note, embed=self.view.embed(), view=self.view, ephemeral=True)
+
+
+class FindPlayerToRemoveModal(discord.ui.Modal):
+    """Remove, step 1: whose characters? Then a list with a button to pick which to remove."""
+
+    def __init__(self, bot: MonkeyBot):
+        super().__init__(title="Remove characters", timeout=900)
+        self.bot = bot
+        self.player = discord.ui.TextInput(max_length=100, placeholder="Name, Discord username, or one of their characters")
+        self.add_item(discord.ui.Label(text="Player", component=self.player))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            player = find_player(self.bot.conn, self.player.value)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        view = RemoveCharactersView(self.bot, player)
+        if not view.characters:
+            await interaction.response.send_message(f"**{player.display}** has no characters.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class RemoveCharactersView(discord.ui.View):
+    MAX = 4 * 10  # a pop-up fits 4 checkbox groups of 10 below its warning
+
+    def __init__(self, bot: MonkeyBot, player: db.Player):
+        super().__init__(timeout=900)
+        self.bot = bot
+        self.player = player
+        self.characters = db.list_characters(bot.conn, player.id)
+        button = discord.ui.Button(label="Choose characters to remove", emoji="🗑️", style=discord.ButtonStyle.danger)
+        button.callback = self._choose
+        self.add_item(button)
+
+    def embed(self) -> discord.Embed:
+        lines = [f"{character_status_label(c['status'])} · **{c['ign']}** ({c['job'] or '?'})" for c in self.characters]
+        return discord.Embed(
+            title=f"{self.player.display}'s characters ({len(self.characters)})",
+            description="\n".join(lines)[:4000],
+            color=EMBED_COLOR,
         )
 
-    @app_commands.command(
-        name="edit", description="Change a character's job, role, damage, status or owner"
-    )
-    @app_commands.describe(
-        dmg="Fallback damage; damage from uploaded logs takes priority",
-        status="Static, sub or inactive (players can also set this themselves)",
-        owner="Move the character to another player",
-    )
-    @app_commands.choices(buff=BUFF_CHOICES, status=CHARACTER_STATUS_CHOICES)
-    @app_commands.autocomplete(character=character_autocomplete, job=job_autocomplete, owner=player_autocomplete)
-    async def edit_character(
-        self,
-        interaction: discord.Interaction,
-        character: str,
-        job: str | None = None,
-        buff: app_commands.Choice[str] | None = None,
-        dmg: float | None = None,
-        status: app_commands.Choice[str] | None = None,
-        owner: str | None = None,
-    ):
-        char = db.get_character(self.bot.conn, character)
-        if char is None:
-            await interaction.response.send_message(f"No character named **{character}**.", ephemeral=True)
-            return
-        new_owner = None
-        if owner:
-            if not (new_owner := await self._get_player(interaction, owner)):
-                return
-            if new_owner.id == char["player_id"]:
-                new_owner = None  # already theirs; nothing to move
-        old_owner = db.get_player(self.bot.conn, char["player_id"])
-        db.update_character(
-            self.bot.conn,
-            char["id"],
-            changed_by=interaction.user.id,
-            job=job.upper() if job else None,
-            buff=buff.value if buff else None,
-            dmg=dmg,
-            status=status.value if status else None,
-            player_id=new_owner.id if new_owner else None,
-        )
-        moved = f" Moved from **{old_owner.display}** to **{new_owner.display}**." if new_owner else ""
-        await interaction.response.send_message(f"✅ Updated **{char['ign']}**.{moved}", ephemeral=True)
+    async def _choose(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(RemoveCharactersModal(self))
 
-    @app_commands.command(name="remove", description="Remove a character from the roster")
-    @app_commands.autocomplete(character=character_autocomplete)
-    async def remove_character(self, interaction: discord.Interaction, character: str):
-        char = db.get_character(self.bot.conn, character)
-        if char is None:
-            await interaction.response.send_message(f"No character named **{character}**.", ephemeral=True)
+
+class RemoveCharactersModal(discord.ui.Modal):
+    def __init__(self, view: RemoveCharactersView):
+        super().__init__(title=f"Remove {view.player.name}'s characters"[:45], timeout=900)
+        self.view = view
+        self.add_item(discord.ui.TextDisplay(
+            "Tick the characters to remove. Their damage history is deleted too, and this can't be undone."
+        ))
+        self.groups = []
+        chunks = popup_chunks(view.characters[: RemoveCharactersView.MAX])
+        for index, chunk in enumerate(chunks):
+            group = discord.ui.CheckboxGroup(
+                required=False, min_values=0, max_values=len(chunk),
+                options=[discord.CheckboxGroupOption(label=f"{c['ign']} ({c['job'] or '?'})"[:100], value=str(c["id"])) for c in chunk],
+            )
+            self.groups.append(group)
+            text = "Characters" + (f" ({index + 1} of {len(chunks)})" if len(chunks) > 1 else "")
+            self.add_item(discord.ui.Label(text=text, component=group))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        ids = [int(v) for g in self.groups for v in g.values]
+        if not ids:
+            await interaction.response.send_message("Nothing ticked, so nothing was removed.", ephemeral=True)
             return
-        db.delete_character(self.bot.conn, char["id"])
-        await interaction.response.send_message(
-            f"🗑️ Removed **{char['ign']}** and its damage history.", ephemeral=True
-        )
+        note = remove_characters(self.view.bot, ids)
+        await interaction.response.edit_message(content=note, embed=None, view=None)
+
+
+class CharacterAdminCog(HostOnly, commands.Cog):
+    @app_commands.command(name="character", description="Add, change or remove characters on the roster")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    @app_commands.describe(change="A character to change: opens its edit pop-up straight away")
+    @app_commands.autocomplete(change=character_autocomplete)
+    async def character(self, interaction: discord.Interaction, change: str | None = None):
+        if change is None:
+            panel = CharacterPanel(self.bot)
+            await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+            return
+        try:
+            char = find_character(self.bot.conn, change)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        view = CharacterEditView(self.bot, char["id"])
+        await interaction.response.send_modal(EditCharacterModal(view, char, from_card=False))
 
 
 async def setup(bot: MonkeyBot) -> None:

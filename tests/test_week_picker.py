@@ -10,19 +10,25 @@ import pytest
 from bot import db, timeutil
 from bot.app import MonkeyBot
 from bot.config import Config
-from bot.views import ADVANCE_WEEKS, AvailabilityEditor, WeekPicker, player_summary_embed
+from bot.views import ADVANCE_WEEKS, WeekPicker, player_summary_embed
 
 
 class FakeResponse:
     def __init__(self):
-        self.edits = []
+        self.edits, self.modal = [], None
 
     async def edit_message(self, **kwargs):
         self.edits.append(kwargs)
 
+    async def send_modal(self, modal):
+        self.modal = modal
 
-def choose(value: str):
-    return SimpleNamespace(data={"values": [value]}, response=FakeResponse())
+
+def choose(value: str, bot=None):
+    """A dropdown choice from user 42."""
+    return SimpleNamespace(
+        data={"values": [value]}, response=FakeResponse(), client=bot, user=SimpleNamespace(id=42, name="tester")
+    )
 
 
 @pytest.fixture
@@ -49,22 +55,31 @@ def test_picker_offers_next_week_and_later_weeks(setup):
     assert select.options[2].description == "In 3 weeks · Default schedule"
 
 
-def test_pick_future_week_opens_editor_and_saves_that_week(setup):
+def test_pick_future_week_opens_popup_and_saves_that_week(setup):
+    from bot.views import AvailabilityModal, set_user_timezone
+
     bot, player, next_week = setup
+    set_user_timezone(bot.conn, 42, "America/New_York")
     target = next_week + timedelta(weeks=3)
-    interaction = choose(target.isoformat())
-    asyncio.run(WeekPicker(bot, player)._pick(interaction))
+    picker = WeekPicker(bot, player)
+    interaction = choose(target.isoformat(), bot)
+    asyncio.run(picker._pick(interaction))
 
-    [edit] = interaction.response.edits
-    editor = edit["view"]
-    assert isinstance(editor, AvailabilityEditor) and editor.week == target
-    assert editor.draft == {1: "Preferred", 2: "Available"}  # starts from the default
+    modal = interaction.response.modal
+    assert isinstance(modal, AvailabilityModal) and modal.week == target
+    assert modal.title == timeutil.week_label(target, capital=True)
+    defaults = {lvl: {o.value for g in gs for o in g.options if o.default} for lvl, gs in modal.groups.items()}
+    assert defaults == {"Preferred": {"1"}, "Available": {"2"}}  # starts from the default
 
-    editor.draft[2] = "Not Available"
-    asyncio.run(editor._save(SimpleNamespace(response=FakeResponse())))
+    modal.groups["Preferred"][0]._values = ["1"]  # squad 2 unticked: Not Available
+    saved = choose(target.isoformat(), bot)
+    asyncio.run(modal.on_submit(saved))
     assert db.get_weekly_availability(bot.conn, player.id, target) == {1: "Preferred", 2: "Not Available"}
     assert db.get_weekly_availability(bot.conn, player.id, next_week) == {}  # other weeks untouched
     assert db.get_confirmation(bot.conn, player.id, target) == "updated"
+    [edit] = saved.response.edits  # the week picker refreshes, with the week now marked changed
+    assert edit["view"] is picker and edit["content"].startswith("✅ Saved your availability")
+    assert target in picker.changed_weeks()
 
 
 def test_changed_weeks_are_marked_and_can_be_reset(setup):

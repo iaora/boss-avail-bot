@@ -3,7 +3,8 @@
 import asyncio
 import dataclasses
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
 import discord
@@ -76,21 +77,48 @@ def test_reminder_without_player_role_has_no_ping(tmp_path):
 
 class Response:
     def __init__(self):
-        self.sent, self.edited = None, None
+        self.sent, self.edited, self.modal = None, None, None
 
     async def send_message(self, content=None, **kwargs):
         self.sent = {"content": content, **kwargs}
+
+    async def send_modal(self, modal):
+        self.modal = modal
 
     async def edit_message(self, **kwargs):
         self.edited = kwargs
 
 
-def click(bot, *, ephemeral_message=None):
-    """A fake interaction from user 42; `ephemeral_message` = pressed on a private (True) or public message."""
+class Followup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content=None, **kwargs):
+        self.sent.append({"content": content, **kwargs})
+
+
+def click(bot, *, ephemeral_message=None, values=None):
+    """A fake interaction from user 42; `ephemeral_message` = pressed on a private (True) or public message;
+    `values` = the choice in a dropdown."""
     message = None if ephemeral_message is None else SimpleNamespace(flags=SimpleNamespace(ephemeral=ephemeral_message))
     return SimpleNamespace(
-        client=bot, user=SimpleNamespace(id=42, name="tester"), message=message, response=Response()
+        client=bot, user=SimpleNamespace(id=42, name="tester"), message=message, response=Response(),
+        followup=Followup(), data={"values": values or []},
     )
+
+
+def tick(modal, preferred, available):
+    """Tick these squad numbers in the availability pop-up (whichever group each squad is in)."""
+    for level, numbers in (("Preferred", preferred), ("Available", available)):
+        for group in modal.groups[level]:
+            group._values = [o.value for o in group.options if int(o.value) in numbers]
+
+
+def ticked_now(modal):
+    """The squads ticked when the pop-up opens, per section."""
+    return {
+        level: {int(o.value) for g in groups for o in g.options if o.default} for level, groups in modal.groups.items()
+    }
 
 
 def rows(view):
@@ -161,15 +189,27 @@ def test_no_change_refreshes_own_view_and_replies_to_reminder(setup):
     assert public.response.sent["ephemeral"] and "Thanks" in public.response.sent["content"]
 
 
-def test_change_default_button_opens_default_editor(setup):
-    from bot.views import AvailabilityEditor, ReminderButton
+def test_change_default_button_opens_default_popup(setup):
+    from bot.views import AvailabilityModal, ReminderButton, set_user_timezone
 
-    bot, player = setup
-    interaction = click(bot)
+    bot, player = setup  # default: 1 Preferred, 2 Not Available, 3 Available, 4 Preferred
+    set_user_timezone(bot.conn, 42, "America/New_York")
+    interaction = click(bot, ephemeral_message=True)
     asyncio.run(ReminderButton("default", WEEK.isoformat()).callback(interaction))
-    editor = interaction.response.sent["view"]
-    assert isinstance(editor, AvailabilityEditor) and editor.mode == "default"
-    assert editor.draft == db.get_default_availability(bot.conn, player.id)
+    modal = interaction.response.modal
+    assert isinstance(modal, AvailabilityModal) and modal.mode == "default"
+    assert modal.title == "Your default availability"
+    assert ticked_now(modal) == {"Preferred": {1, 4}, "Available": {3}}
+
+    tick(modal, preferred={1}, available={2, 3})
+    saved = click(bot, ephemeral_message=True)
+    asyncio.run(modal.on_submit(saved))
+    assert db.get_default_availability(bot.conn, player.id) == {
+        1: "Preferred", 2: "Available", 3: "Available", 4: "Not Available"
+    }
+    assert db.get_weekly_availability(bot.conn, player.id, WEEK) == {}  # the week itself isn't changed
+    assert saved.response.edited is not None  # /cq availability refreshes in place
+    assert saved.followup.sent[0]["content"] == "✅ Saved your default availability."
 
 
 def test_update_a_future_week_button_opens_week_picker(setup):
@@ -183,11 +223,14 @@ def test_update_a_future_week_button_opens_week_picker(setup):
 
 def test_change_a_characters_week(setup):
     from bot.squad_breakdown import build_breakdown
-    from bot.views import AvailabilityEditor, CharacterPicker, ReminderButton
+    from bot.views import AvailabilityModal, CharacterPicker, ReminderButton
 
     bot, player = setup  # default: 1 Preferred, 2 Not Available, 3 Available, 4 Preferred
-    db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
-    db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
+    from bot.views import set_user_timezone
+
+    set_user_timezone(bot.conn, 42, "America/New_York")
+    db.add_character(bot.conn, player.id, "Main", "NL", 4.0, "static")
+    db.add_character(bot.conn, player.id, "Alt", "DRK", 3.0, "sub")
     alt = db.get_character(bot.conn, "Alt")
     db.set_character_overrides(bot.conn, alt["id"], {2: "Preferred"})  # ongoing exception
 
@@ -199,16 +242,22 @@ def test_change_a_characters_week(setup):
         "Main (NL)": "Static · No changes this week", "Alt (DRK)": "Flex · No changes this week"
     }
 
-    pick = SimpleNamespace(data={"values": [str(alt["id"])]}, response=Response())
+    pick = click(bot, ephemeral_message=True, values=[str(alt["id"])])
     asyncio.run(picker._pick(pick))
-    editor = pick.response.edited["view"]
-    assert isinstance(editor, AvailabilityEditor) and editor.mode == "character_week"
-    assert editor.draft == {1: "Preferred", 2: "Preferred", 3: "Available", 4: "Preferred"}  # its usual week
-    assert "this week only" in editor.embed().title or "only" in editor.embed().title
+    modal = pick.response.modal
+    assert isinstance(modal, AvailabilityModal) and modal.mode == "character_week"
+    assert ticked_now(modal) == {"Preferred": {1, 2, 4}, "Available": {3}}  # its usual week
+    assert modal.title.startswith("Alt: ") and modal.title.endswith("week only")
+    squad_2 = next(o for o in modal.groups["Preferred"][0].options if o.value == "2")
+    assert squad_2.description == "Usual this week: 🟢 Preferred"  # its ongoing exception
 
-    editor.draft[4] = "Not Available"  # can't bring Alt to squad 4 this week
-    assert "Not Available ✏️ (usual 🟢)" in editor.embed().description
-    asyncio.run(editor._save(SimpleNamespace(response=Response())))
+    tick(modal, preferred={1, 2}, available={3})  # can't bring Alt to squad 4 this week
+    saved = click(bot, ephemeral_message=True)
+    asyncio.run(modal.on_submit(saved))
+    assert saved.response.edited["content"].startswith("✅ Changed 1 squad(s) for Alt")
+    assert isinstance(saved.response.edited["view"], CharacterPicker)  # the picker refreshes
+    alt_option = next(o for o in saved.response.edited["view"].children[0].options if o.label == "Alt (DRK)")
+    assert alt_option.description == "Flex · 1 squad(s) changed this week"
 
     assert db.get_character_weekly(bot.conn, alt["id"], WEEK) == {4: "Not Available"}  # only the change
     assert db.get_character_overrides(bot.conn, alt["id"]) == {2: "Preferred"}  # ongoing exception untouched
@@ -229,10 +278,11 @@ def test_change_a_characters_week(setup):
 
 
 def test_ongoing_character_availability_still_in_cq_characters(setup):
-    from bot.views import AvailabilityEditor, CharacterPicker, ReminderButton
+    from bot.views import CharacterPicker, ReminderButton, set_user_timezone
 
     bot, player = setup
-    db.add_character(bot.conn, player.id, "Alt", "DRK", "HB", 3.0, "sub")
+    set_user_timezone(bot.conn, 42, "America/New_York")
+    db.add_character(bot.conn, player.id, "Alt", "DRK", 3.0, "sub")
     alt = db.get_character(bot.conn, "Alt")
     db.set_character_overrides(bot.conn, alt["id"], {2: "Preferred"})
     interaction = click(bot)
@@ -240,9 +290,18 @@ def test_ongoing_character_availability_still_in_cq_characters(setup):
     picker = interaction.response.sent["view"]
     assert isinstance(picker, CharacterPicker) and not picker.this_week_only
     assert picker.children[0].options[0].description == "Flex · 1 squad(s) differ from your default"
-    pick = SimpleNamespace(data={"values": [str(alt["id"])]}, response=Response())
+    pick = click(bot, ephemeral_message=True, values=[str(alt["id"])])
     asyncio.run(picker._pick(pick))
-    assert pick.response.edited["view"].mode == "character"
+    modal = pick.response.modal
+    assert modal.mode == "character" and modal.title == "Alt: ongoing schedule"
+    squad_2 = next(o for o in modal.groups["Preferred"][0].options if o.value == "2")
+    assert squad_2.description == "Your default: 🔴 Not Available" and squad_2.default  # Alt's exception
+
+    tick(modal, preferred={1, 4}, available={3})  # Alt now follows the default again
+    saved = click(bot, ephemeral_message=True)
+    asyncio.run(modal.on_submit(saved))
+    assert db.get_character_overrides(bot.conn, alt["id"]) == {}
+    assert saved.response.edited["content"] == "✅ Alt now follows your default schedule."
 
 
 def test_cq_characters_has_character_availability_button(setup):
@@ -250,7 +309,7 @@ def test_cq_characters_has_character_availability_button(setup):
     from bot.views import CharacterPicker, ReminderButton
 
     bot, player = setup
-    db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
+    db.add_character(bot.conn, player.id, "Main", "NL", 4.0, "static")
 
     class Response:
         async def send_message(self, **kwargs):
@@ -273,7 +332,7 @@ def test_cq_characters_damage_history_button(setup):
     from bot.views import DamageHistoryPicker
 
     bot, player = setup
-    db.add_character(bot.conn, player.id, "Main", "NL", "DPS", 4.0, "static")
+    db.add_character(bot.conn, player.id, "Main", "NL", 4.0, "static")
     log = damage.parse_log(
         "[Start Time] 27-09-2026 01:00:00\n[Finish Time] 27-09-2026 01:27:30\n>>Main: 5,000,000,000\n",
         bot.config.log_timezone,
@@ -335,3 +394,182 @@ def test_timestamps_include_the_weekday(setup):
     for text in texts:
         assert ":F>" in text  # Discord's long style: "Sunday, September 27, 2026 12:00 PM"
         assert ":f>" not in text and ":d>" not in text
+
+
+def pick(select, value, bot):
+    """Choose `value` in a dropdown, as user 42."""
+    select._values = [value]
+    interaction = click(bot, ephemeral_message=True)
+    asyncio.run(select.callback(interaction))
+    return interaction
+
+
+def press_update(bot, week=WEEK):
+    """Press ✏️ Change weekly availability."""
+    from bot.views import ReminderButton
+
+    interaction = click(bot, ephemeral_message=True)
+    asyncio.run(ReminderButton("update", week.isoformat()).callback(interaction))
+    return interaction
+
+
+def weekly_popup(bot, zone="America/New_York"):
+    from bot.views import set_user_timezone
+
+    set_user_timezone(bot.conn, 42, zone)
+    return press_update(bot).response.modal
+
+
+def checkbox_groups(modal):
+    labels = [
+        c for c in modal.children
+        if isinstance(c, discord.ui.Label) and isinstance(c.component, discord.ui.CheckboxGroup)
+    ]
+    return [(label.text, [(o.label, o.default) for o in label.component.options]) for label in labels]
+
+
+def test_weekly_popup_shows_local_times_and_ticks_current_levels(setup):
+    bot, player = setup  # default: 1 Preferred, 2 Not Available, 3 Available, 4 Preferred
+    modal = weekly_popup(bot, "Australia/Sydney")
+    assert modal.title == timeutil.week_label(WEEK, capital=True)
+    first = modal.children[0]  # "can't make any runs" comes first, unticked
+    assert isinstance(first.component, discord.ui.Checkbox) and not first.component.default
+    preferred_label = next(c for c in modal.children if c.text == "🟢 Preferred")
+    assert "Times in NSW / Victoria (Sydney)" in preferred_label.description
+
+    squads = modal.squads
+    sydney = ZoneInfo("Australia/Sydney")
+    expected = [(f"Squad {s.number} · {timeutil.run_label(s.starts_at, sydney)}", s.number in (1, 4)) for s in squads]
+    assert checkbox_groups(modal)[0] == ("🟢 Preferred", expected)  # one group per level with 4 runs
+    assert [ticked for _, ticked in checkbox_groups(modal)[1][1]] == [s.number == 3 for s in squads]
+
+    # the same run shows in each player's own timezone
+    la = weekly_popup(bot, "America/Los_Angeles")
+    assert checkbox_groups(la)[0][1][0][0] != expected[0][0]
+    assert checkbox_groups(la)[0][1][0][0].endswith(timeutil.run_label(squads[0].starts_at, ZoneInfo("America/Los_Angeles")))
+
+
+def test_run_label_format():
+    unix = int(datetime(2026, 10, 10, 1, 0, tzinfo=timezone.utc).timestamp())
+    assert timeutil.run_label(unix, ZoneInfo("America/New_York")) == "Fri Oct 9, 9:00 PM"
+    assert timeutil.run_label(unix, ZoneInfo("Australia/Sydney")) == "Sat Oct 10, 12:00 PM"
+
+
+def test_popup_splits_16_runs_into_two_groups_per_level(setup):
+    bot, _ = setup
+    for number in range(5, 17):
+        db.set_squad_template(bot.conn, number, number % 7, "10:00")
+    modal = weekly_popup(bot)
+    assert len(modal.children) == 5  # Discord's limit: the "can't make any" checkbox + 4 checkbox groups
+    assert [(text, len(options)) for text, options in checkbox_groups(modal)] == [
+        ("🟢 Preferred (1 of 2)", 8), ("🟢 Preferred (2 of 2)", 8),
+        ("🟡 Available (1 of 2)", 8), ("🟡 Available (2 of 2)", 8),
+    ]
+
+
+def test_popup_asks_for_timezone_the_first_time(setup):
+    from bot.views import AvailabilityModal, TimezoneSelect, get_user_timezone
+
+    bot, _ = setup
+    interaction = press_update(bot)
+    assert interaction.response.modal is None
+    assert "Pick your timezone first" in interaction.response.sent["content"]
+    [select] = interaction.response.sent["view"].children
+    assert isinstance(select, TimezoneSelect)
+
+    picked = pick(select, "Europe/London", bot)
+    assert get_user_timezone(bot.conn, 42) == ZoneInfo("Europe/London")
+    assert isinstance(picked.response.modal, AvailabilityModal)  # opens straight away
+    assert press_update(bot).response.modal is not None  # and isn't asked again
+
+
+def test_too_many_runs_falls_back_to_dropdown_editor_and_finished_week_is_refused(setup):
+    from bot.views import POPUP_MAX_SQUADS, AvailabilityEditor, set_user_timezone
+
+    bot, _ = setup
+    set_user_timezone(bot.conn, 42, "America/New_York")
+    for number in range(5, POPUP_MAX_SQUADS + 2):
+        db.set_squad_template(bot.conn, number, number % 7, "10:00")
+    interaction = press_update(bot)
+    assert interaction.response.modal is None
+    editor = interaction.response.sent["view"]
+    assert isinstance(editor, AvailabilityEditor) and editor.mode == "weekly"
+
+    interaction = press_update(bot, WEEK - timedelta(days=7))
+    assert interaction.response.modal is None and "already finished" in interaction.response.sent["content"]
+
+
+def test_weekly_popup_submit_saves_the_week(setup):
+    from bot.views import ticked_levels
+
+    bot, player = setup
+    modal = weekly_popup(bot)
+    preferred, available = modal.groups["Preferred"][0], modal.groups["Available"][0]
+    preferred._values, available._values = ["2", "3"], ["3", "4"]  # 3 ticked in both: Preferred wins
+
+    interaction = click(bot, ephemeral_message=True)
+    asyncio.run(modal.on_submit(interaction))
+    assert db.get_weekly_availability(bot.conn, player.id, WEEK) == {
+        1: "Not Available", 2: "Preferred", 3: "Preferred", 4: "Available"
+    }
+    assert db.get_confirmation(bot.conn, player.id, WEEK) == "updated"  # counts as checking in
+    assert interaction.response.edited is not None  # the /cq availability message refreshes in place
+    [note] = interaction.followup.sent
+    assert note["ephemeral"] and note["content"].startswith("✅ Saved your availability for the week of")
+    assert "Squad(s) 3 were ticked in both" in note["content"]
+
+    squads = modal.squads
+    assert ticked_levels(squads, set(), set()) == {s.number: "Not Available" for s in squads}
+
+
+def test_settings_timezone_and_squad_order(setup):
+    from bot.views import SettingsView, get_squad_order, get_user_timezone
+
+    bot, _ = setup
+    view = SettingsView(bot, 42)
+    timezone_field, order_field = view.embed().fields
+    assert timezone_field.value.startswith("Not set") and order_field.value.startswith("**By time**")
+
+    select, sort_btn = view.children
+    interaction = pick(select, "Asia/Tokyo", bot)
+    assert get_user_timezone(bot.conn, 42) == ZoneInfo("Asia/Tokyo")
+    shown = interaction.response.edited["embed"].fields[0].value
+    assert shown.startswith("**Japan / Korea (JST)**")
+    assert [o.default for o in view.children[0].options].count(True) == 1  # the new choice is selected
+
+    interaction = click(bot, ephemeral_message=True)
+    asyncio.run(view.children[1].callback(interaction))
+    assert get_squad_order(bot.conn, 42) == "number"  # the same choice every squad list uses
+    assert interaction.response.edited["embed"].fields[1].value.startswith("**By squad number**")
+    assert view.children[1].label == "Sort by time"
+
+
+def test_timezone_choices_fit_a_dropdown():
+    from bot.views import TIMEZONE_CHOICES
+
+    assert len(TIMEZONE_CHOICES) <= 25
+    for label, zone in TIMEZONE_CHOICES:
+        ZoneInfo(zone)
+        assert len(label) <= 100
+
+
+def test_popup_titles_fit_discords_limit():
+    from bot.views import TITLE_MAX, AvailabilityModal
+
+    long_name = {"ign": "AVeryLongCharacterNameThatGoesOnAndOn"}
+    for mode in ("weekly", "default", "character", "character_week"):
+        title = AvailabilityModal._title(mode, WEEK, long_name)
+        assert len(title) <= TITLE_MAX
+    assert AvailabilityModal._title("character", WEEK, long_name).endswith("…")
+
+
+def test_cant_make_any_runs_checkbox_saves_everything_as_not_available(setup):
+    bot, player = setup
+    modal = weekly_popup(bot)
+    tick(modal, preferred={1, 4}, available={3})  # whatever is ticked...
+    modal.none._value = True  # ...is ignored when "can't make any" is ticked
+    saved = click(bot, ephemeral_message=True)
+    asyncio.run(modal.on_submit(saved))
+    assert db.get_weekly_availability(bot.conn, player.id, WEEK) == {n: "Not Available" for n in (1, 2, 3, 4)}
+    assert db.get_confirmation(bot.conn, player.id, WEEK) == "updated"  # still counts as checking in
+    assert saved.followup.sent[0]["content"].endswith("Every run is 🔴 Not Available.")
