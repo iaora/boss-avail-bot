@@ -3,18 +3,19 @@
 import asyncio
 import dataclasses
 import re
-from datetime import date
+from datetime import timedelta
 from types import SimpleNamespace
 
 import discord
 import pytest
 
-from bot import db
+from bot import db, timeutil
 from bot.app import MonkeyBot
 from bot.config import Config
 from bot.views import LayoutToggleButton, get_layout, player_summary_embed, send_reminder
 
-WEEK = date(2026, 9, 27)
+# The current week: the buttons refuse to change weeks that are already over.
+WEEK = timeutil.current_week_start(timeutil.now_utc(), Config.from_env().timezone)
 
 
 class FakeChannel:
@@ -216,7 +217,7 @@ def test_change_a_characters_week(setup):
     squads = db.squads_for_week(bot.conn, WEEK, bot.tz)
     this_week = build_breakdown(bot.conn, [player], squads, WEEK)
     assert [c["ign"] for e in this_week[4]["Preferred"] for c in e.characters] == ["Main"]
-    next_week = build_breakdown(bot.conn, [player], squads, date(2026, 10, 4))
+    next_week = build_breakdown(bot.conn, [player], squads, WEEK + timedelta(days=7))
     assert sorted(c["ign"] for e in next_week[4]["Preferred"] for c in e.characters) == ["Alt", "Main"]
     # the player sees it on /cq availability
     field = next(f for f in player_summary_embed(bot, player, WEEK).fields if f.name == "Characters changed for this week")
