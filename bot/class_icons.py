@@ -1,10 +1,11 @@
 """Class icons, stored as the bot's own application emojis (named class_<JOB>, e.g. class_DRK).
 
 Application emojis belong to the bot, not a server: they work everywhere the bot posts and
-don't use server emoji slots. The source of truth is the CLASS_ICONS_DIR folder: one image per
-class, named after the job (DRK.png, NL.png, ...). The bot keeps Discord in step with it in the
-background (see cogs/class_icons.py): new files are uploaded, changed files replaced, and icons
-whose file was deleted are removed.
+don't use server emoji slots, but each bot (prod and test) has its own copies. The source of truth
+is the bot_data/class_icons/ folder, shared by both bots: one image per class, named after the job
+(DRK.png, NL.png, ...). Each bot keeps Discord in step with it in the background (see
+cogs/class_icons.py): new files are uploaded, changed files replaced, and icons whose file was
+deleted are removed.
 """
 
 from __future__ import annotations

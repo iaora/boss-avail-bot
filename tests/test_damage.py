@@ -23,7 +23,7 @@ def conn(tmp_path):
     c = db.connect(tmp_path / "test.db")
     player = db.create_player(c, name="Tester", discord_handle="@tester")
     for ign in ("Alpha", "Bravo"):
-        db.add_character(c, player.id, ign, "NL", "DPS", 1.0)
+        db.add_character(c, player.id, ign, "NL", 1.0)
     yield c
     c.close()
 
@@ -90,7 +90,7 @@ def test_reupload_is_duplicate_but_fills_new_characters(conn):
     assert again.duplicate
 
     player = db.get_player_by_handle(conn, "@tester")
-    db.add_character(conn, player.id, "Charlie", "BM", "SE", None)
+    db.add_character(conn, player.id, "Charlie", "BM", None)
     third = damage.record_log(conn, damage.parse_log(text, SYDNEY), message_id=3)
     assert not third.duplicate and [u[0] for u in third.updated] == ["Charlie"]
     assert conn.execute("SELECT COUNT(*) FROM damage_logs").fetchone()[0] == 1

@@ -1,28 +1,31 @@
 MONKEY INC BOT: HOST GUIDE
 ===========================
 
-Host commands are all under /host. You can use them if you have the host role (HOST_ROLE_ID)
-or the Manage Server permission. Replies are only visible to you.
+Host commands are /cq_host, /cq_config, /player and /character. Each shows a panel of
+buttons; the buttons run the tools or open pop-ups. You can use them if you have the host
+role (HOST_ROLE_ID) or the Manage Server permission. Replies are only visible to you.
 
 Players use the commands in user_guide.txt. Read that first so you know what players see.
 
 
 HOST COMMANDS AT A GLANCE
 -------------------------
-  /host       status, availability, import, squads, damage_history, remind_now
-  /config     reminders, damage_logs, squad_time, squad_remove   (settings)
-  /player     add, edit, link
-  /character  add, edit, remove
+  /cq_host    panel: week dropdown + Status, Availability, Prep Roster, Player availability,
+              Damage history, Post reminder now buttons
+  /cq_config  settings panel: Reminders, Damage logs, Squad time, Remove squads, reminders
+              on/off and Import roster buttons
+  /player     panel: Add, Change, Link buttons
+  /character  panel: Add, Change, Remove buttons
 
 
 WHO CAN SEE THE HOST COMMANDS
 -----------------------------
-/host, /config, /player and /character are hidden from the command list for everyone
+/cq_host, /cq_config, /player and /character are hidden from the command list for everyone
 except members with the Manage Server permission. Discord doesn't let a bot show commands
 to a role by itself, so a server admin does this once for EACH of the four:
 
   1. Server Settings > Integrations > Monkey Inc. > Manage.
-  2. Under Commands, click /host (then /config, /player and /character).
+  2. Under Commands, click /cq_host (then /cq_config, /player and /character).
   3. Add the host role (the one in HOST_ROLE_ID) and set it to allowed (✅).
 
 Hosts may need to restart Discord (or press Ctrl+R / Cmd+R) before they appear.
@@ -39,12 +42,13 @@ role and set it to allowed (✅). Keep the host-role overrides from step 3 in pl
 KEY IDEAS
 ---------
 - Squad order: every list of squads starts in time order. 🔀 "Sort by squad #" (on
-  /host availability's overview and "All squads", /host squads, a player's availability,
+  Availability, a player's availability, /cq_config's squad times,
   and the player screens) switches to squad-number order. It's remembered per person and
   used on every screen until you switch back with 🔀 "Sort by time".
 - Week: a week runs Sunday to Saturday in the bot's timezone (default US Eastern,
-  BOT_TIMEZONE). Most host commands take week: "Next week (upcoming)" (the default) or
-  "This week (current)".
+  BOT_TIMEZONE). The week dropdown at the top of /cq_host chooses "Next week (upcoming)"
+  (the default) or "This week (current)" for Status, Availability, Prep Roster and Player
+  availability.
 - Availability levels: 🟢 Preferred, 🟡 Available, 🔴 Not Available.
 - Default vs. weekly: every player has a default schedule. For any week, the bot uses the
   player's weekly update if they submitted one. Otherwise it uses their default.
@@ -52,23 +56,23 @@ KEY IDEAS
   weekly update. Viewing their schedule doesn't count.
 - Advance submissions: players can change their availability for any of the next 8 weeks
   ("Update a future week" in /cq availability). Those changes count as confirmed for that week. They show up in
-  /host status and /host availability once that week is "next week" or "this week".
+  Status and Availability once that week is "next week" or "this week".
 - Player status:
-    active     Normal roster member. Counted in /host status and /host availability.
+    active     Normal roster member. Counted in Status and Availability.
     inactive   Not currently running. Ignored by status and availability.
   (A CHARACTER's status is separate: see character status, ⭐ static / ⏳ flex /
   💤 inactive.)
 - Slotting stays in the Google Sheet. The bot learns squads and slot status when you upload
-  the sheet with /host import.
+  the sheet with /cq_config > Import roster.
 
 
 1. CHECKING AVAILABILITY
 ------------------------
-/host status [week]
+/cq_host > 📋 Status
     How many ACTIVE players have confirmed (e.g. 41 / 73), with one line each for
     ✅ No change, ✏️ Updated and ⏳ Not confirmed yet. Lists every player who SUBMITTED A
     SCHEDULE CHANGE for the week. Look up someone's changed
-    schedule with /host availability player:<name>.
+    schedule with 👤 Player availability.
     The 👤 "See individual availability" button (shown when someone changed their week)
     opens one private message with a dropdown of everyone who submitted a schedule change,
     with how many squads they changed. Pick one and that message shows exactly what changed
@@ -76,117 +80,137 @@ KEY IDEAS
     characters they changed for just this week, followed by their full availability for the
     week (with the 🔀 sort toggle). Pick someone else and the same message updates; no new
     message each time.
-    The 📋 "Open availability" button opens the /host availability view for the same week
+    The 📋 "Open availability" button opens the Availability view for the same week
     (as a new message, so the status stays above it).
     It also lists CHARACTER STATUS CHANGES from the last 7 days, with before and after:
         Alice: Ace (NL) ⭐ Static → 💤 Inactive
         Bob: Bolt (NL) ⭐ Static → ⏳ Flex (by host)
     If a character changed more than once, you see where it started and where it ended up;
     one changed and then changed back isn't listed. "(by host)" = changed with
-    /character edit rather than by the player. Every change is kept in the bot's database.
+    /character > Change rather than by the player. Every change is kept in the bot's database.
 
-/host availability [player] [week]
-    Without a player: availability for every active player.
-      - The message shows, per squad, how many players are 🟢 / 🟡 / 🔴.
-      - Buttons and a squad dropdown underneath help with slotting. The buttons are
-        📋 Overview, 🟢 Preferred, 🟡 Available; the one for what's on screen is blue
-        (the message opens on Overview).
-          📋 Overview                   The counts per squad.
-          🟢 Preferred / 🟡 Available   Pick the level to show.
-          Squad dropdown: "All squads"  Every squad with the players at that level (names).
-                                        ⏳ marks players who only have ⏳ Flex characters at
-                                        that level; they're listed after players with a
-                                        static character.
-          Squad dropdown: a squad       That squad's characters at that level, grouped by
-                                        class under role headings, on these pages:
-                                          Page 1  HP:   DRK, ARAN
-                                                  BSP:  BSP
-                                                  SI:   BUCC, TB
-                                          Page 2  CRIT: DB, BM, MM, WA
-                                          Page 3  DPS:  every other class, A-Z
-                                        Use ◀ ▶ to move between pages. A page with no
-                                        characters is skipped.
-                                        Each class shows its icon and a count, e.g.
-                                        "<icon> DRK (6)", then one line per character:
-                                        damage - name, e.g. "• 4.3b - ragu". Damage is
-                                        in billions (27.5-minute scale), rounded down to one
-                                        decimal (3.08 -> 3.0b), in a shaded box so it's easy
-                                        to skim; "?" = no damage recorded.
-                                        Order: static characters first, then ⏳ Flex ones; each
-                                        highest damage first (no damage last).
-                                        Inactive characters are left out.
-                                        🔀 "Group by player" switches to players A-Z, each
-                                        with their characters as bullets (class icon and
-                                        name, or "ragu/DRK" without an icon), ordered:
-                                          1. static, then ⏳ flex
-                                          2. class group: Warrior (HERO PAL DRK DW ARAN),
-                                             Magician (FP IL BSP BW EVAN), Archer (BM MM
-                                             WA), Thief (NL SHAD DB NW), Pirate (BUCC SAIR
-                                             TB)
-                                          3. character name
-                                        🔀 "Group by class" switches back.
-                                        Busy squads spread over pages (◀ ▶). In either
-                                        grouping, anything too long for one page continues
-                                        on the next, marked "(cont.)" in the class view.
-      - Availability here is per character: the player's weekly change (or default), then
-        the character's ongoing exceptions ("Character availability" in /cq characters; when
-        both exist, the less available one counts), then anything set for that character for
-        this week only ("Change a character's week" in /cq availability), which wins.
-    With a player: that player's availability for the week (their weekly update, or their
-    default if they didn't submit one), their confirmation, and their characters with any
-    per-character overrides.
-    Tip: start typing a name, Discord handle, or character IGN, then pick from the list.
+/cq_host > 📊 Availability
+    Availability for every active player, by name. Buttons underneath switch what's shown; the
+    one for what's on screen is blue (the message opens on Overview):
+      📋 Overview                   How many players are 🟢 / 🟡 / 🔴 for each squad.
+      🟢 Preferred / 🟡 Available   Every squad with the players at that level (names).
+                                    ⏳ marks players who only have ⏳ Flex characters at that
+                                    level; they're listed after players with a static
+                                    character.
+      🔀 Sort by squad # / time     The order of the squads.
+    For each squad's CHARACTERS (to slot them), use Prep Roster.
+
+/cq_host > 🧾 Prep Roster
+    One squad at a time: the characters at 🟢 Preferred or 🟡 Available, for slotting. It opens
+    on the first squad. Pick another from the squad dropdown (each squad shows how many are
+    preferred and available), and switch level with 🟢 Preferred / 🟡 Available.
+
+    Grouped by class (the default), under role headings, on these pages:
+        Page 1  HP:   DRK, ARAN
+                BSP:  BSP
+                SI:   BUCC, TB
+        Page 2  CRIT: DB, BM, MM, WA
+        Page 3  DPS:  every other class, A-Z
+      Use ◀ ▶ to move between pages. A page with no characters is skipped.
+      Each class shows its icon and a count, e.g. "<icon> DRK (6)", then one line per
+      character: damage - name, e.g. "• 4.3b - ragu". Damage is in billions (27.5-minute
+      scale), rounded down to one decimal (3.08 -> 3.0b), in a shaded box so it's easy to
+      skim; "?" = no damage recorded.
+      Order: static characters first, then ⏳ Flex ones; each highest damage first (no
+      damage last). Inactive characters are left out.
+
+    🔀 "Group by player" switches to players A-Z, each with their characters as bullets
+    (class icon and name, or "ragu/DRK" without an icon), ordered:
+        1. static, then ⏳ flex
+        2. class group: Warrior (HERO PAL DRK DW ARAN), Magician (FP IL BSP BW EVAN),
+           Archer (BM MM WA), Thief (NL SHAD DB NW), Pirate (BUCC SAIR TB)
+        3. character name
+    🔀 "Group by class" switches back.
+    Busy squads spread over pages (◀ ▶). In either grouping, anything too long for one page
+    continues on the next, marked "(cont.)" in the class view.
+
+    Availability here is per character: the player's weekly change (or default), then the
+    character's ongoing exceptions ("Character availability" in /cq characters; when both
+    exist, the less available one counts), then anything set for that character for this
+    week only ("Change a character's week" in /cq availability), which wins.
+
+/cq_host > 👤 Player availability
+    Type a player (name, Discord username, or one of their characters) in the pop-up. Shows
+    their availability for the week (their weekly update, or their default if they didn't
+    submit one), their confirmation, and their characters with any per-character overrides.
 
 
 2. MANAGING PLAYERS
 -------------------
-/player link player:<player> member:<@member>
-    Link a roster player to a Discord account. Use this when a player's Discord username
-    changed and the bot says it can't find them. Players are otherwise linked
-    automatically the first time they use the bot.
-
 Only hosts can add or change players and characters. Players can view their characters
 (/cq characters) and set their own availability, but can't edit the roster.
 
-/player add name:<name> [member:<@member>] [username:<discord username>] [status]
-    Add a new player. Pick their Discord account with member (recommended). If they're
-    not in the server yet, give their Discord username instead; they're linked
-    automatically the first time they use the bot. Status defaults to Active.
-    Then add their characters. The player sets their usual availability with "Change default availability" in
-    /cq availability.
+/player
+    Shows three buttons. Each opens a pop-up. Players are TYPED (their name, Discord
+    username, or one of their characters) and matched when you submit; if no single player
+    matches, nothing is saved and the bot suggests close matches. Discord accounts are
+    picked with Discord's member picker, which can search.
 
-/player edit player:<player> [name:<new name>] [status:<Active | Inactive>]
-    Rename a player, change their status, or both.
+  ➕ Add      Name, Discord account (recommended), Discord username (only if they're not in
+              the server yet; they're linked automatically the first time they use the bot)
+              and Status (Active by default). Then add their characters with /character.
+              The player sets their usual availability with "Change default availability"
+              in /cq availability.
+  ✏️ Change   Type the player; the bot shows their details (Discord account, status,
+              characters) with an Edit button. Edit opens a pop-up filled in with their Name
+              and Status. Only what you change is saved.
+              Shortcut: /player change:<name> searches as you type. Pick the player and their
+              edit pop-up opens straight away.
+  🔗 Link     Player and Discord account. Use this when a player's Discord username changed
+              and the bot says it can't find them. Players are otherwise linked automatically
+              the first time they use the bot.
 
-/character add player:<player> ign:<IGN> job:<job> buff:<role> [dmg] [status]
-    Add a character to a player. Job suggestions come from jobs already on the roster.
-    buff is one of DPS, HASTE, SE, HSH, SI/TL, SI, THORNS, HB.
+/character
+    Shows three buttons. Each opens a pop-up. Pop-ups can't search, so you TYPE player and
+    character names; they're matched when you submit (capitals don't matter). A player can be
+    typed as their name, Discord username, or one of their characters. If no single match is
+    found, nothing is saved and the bot suggests close matches.
 
-/character edit character:<IGN> [job] [buff] [dmg] [status] [owner]
-    Change a character's job, role, damage or status. The dmg you enter is a fallback: once
-    the character has runs from uploaded damage logs, those take priority.
-    owner moves the character to another player (pick from the suggestions). Its damage
-    history, character-specific availability and status move with it.
+  ➕ Add      Player, In-game name, Job (dropdown; each job shows its buff, e.g. "Buff: HSH"),
+              Damage (optional) and Status (Static by default). You never enter a buff: it
+              always comes from the job (see "Buffs" below).
+  ✏️ Change   Type the character's in-game name; the bot shows its details with an Edit
+              button. Edit opens a pop-up filled in with its Job, Damage, Status and
+              "Move to player" (leave empty to keep the owner). Only what you change is saved.
+              Changing the job also changes the buff to the new job's.
+              The damage you enter is a fallback: once the character has runs from uploaded
+              damage logs, those take priority. Moving a character keeps its damage history,
+              character-specific availability and status.
+              Shortcut: /character change:<name> searches as you type. Pick the character and
+              its edit pop-up opens straight away, with no in-between message.
+  🗑️ Remove   Type the player; the bot lists their characters with a button that opens a
+              pop-up of checkboxes. Tick one or more and submit to remove them, including their
+              damage history and availability overrides. This can't be undone.
+
+Buffs
+  Every character's buff comes from its job (class); nobody enters it:
+    DPS     ARAN, BW, DW, EVAN, FP, HERO, IL, PAL, SAIR
+    HASTE   NL, NW, SHAD        SE      BM, MM, WA        HSH     BSP
+    SI/TL   BUCC                SI      TB                THORNS  DB        HB   DRK
+  A job that isn't listed has no buff (shown as "?"). The table is db.JOB_BUFFS in the code.
 
 Character status (⭐ static / ⏳ flex / 💤 inactive) shows which characters a player wants
 slotted. Players choose Static or Flex themselves with the "Set character status" button in
 /cq characters. Only hosts can mark a character 💤 Inactive (or change it back), with
-/character add or /character edit (status option); players see inactive characters as
+/character > Change (Status); players see inactive characters as
 locked. It starts as Static for
-characters marked Perm on the sheet, Flex otherwise; /host import never changes it.
-
-/character remove character:<IGN>
-    Remove a character, including its damage history and availability overrides.
+characters marked Perm on the sheet, Flex otherwise; Import roster never changes it.
 
 
 3. UPDATING THE ROSTER FROM THE GOOGLE SHEET
 --------------------------------------------
-/host import file:<roster.csv>
+/cq_config > 📥 Import roster
     In Google Sheets: File > Download > Comma Separated Values (.csv) on the CQ Roster tab.
-    Then attach that file to /host import.
+    Then press Import roster and upload that file in the pop-up.
 
     What it does:
-      - Updates every character's job, buff, dmg, run time, squad, slot status and perm.
+      - Updates every character's job, dmg, run time, squad, slot status and perm. The
+        buff comes from the job; the sheet's Buff column is ignored.
       - Adds new players and characters it hasn't seen before. New players start as
         active, with a default schedule taken from the sheet's Squad 1..N columns.
     Damage from the sheet (Dmg/27.5, or Dmg when that's empty) is assumed to be already
@@ -197,8 +221,8 @@ characters marked Perm on the sheet, Flex otherwise; /host import never changes 
       - Availability players already set in the bot (default, weekly or per-character).
       - Characters that are in the bot but missing from the CSV (they're listed in the reply).
 
-    The CSV is matched by column names (IGN, Name, Discord, Job, Buff, Squad, Dmg,
-    Run time, Perm, Status, Squad 1..N), so extra or reordered columns are fine.
+    The CSV is matched by column names (IGN, Name, Discord, Job, Squad, Dmg, Run time,
+    Perm, Status, Squad 1..N), so extra or reordered columns are fine.
 
 
 4. SQUAD TIMES
@@ -207,21 +231,24 @@ The bot keeps a recurring weekly schedule for each squad (day + time in the bot 
 first loaded from bot_data/squad_timings.txt. You can move a squad for one week, or change
 it permanently.
 
-/host squads [week]
-    List squad times, shown in your own timezone. Squads moved for that week are marked ✏️.
+/cq_config
+    Shows next week's squad times, in your own timezone. Squads moved for just that week are
+    marked ✏️.
 
-/config squad_time squad:<n> [day:<weekday> time:<HH:MM>] [permanent] [reset]
-    Time is 24-hour, in the bot timezone (e.g. 21:30).
-      permanent:False (default)  Moves the squad for NEXT WEEK only.
-      permanent:True             Changes the recurring schedule for all future weeks.
-                                 Also use this to ADD a new squad number.
-      reset:True                 Undoes next week's one-off move for that squad, putting it
-                                 back on the recurring schedule. Leave out day and time.
+/cq_config > 🕒 Squad time
+    A pop-up: pick the squad (or "➕ New squad"), the day, a 24-hour time in the bot timezone
+    (e.g. 21:30), and what to change:
+      Next week only (default)   Moves the squad for NEXT WEEK only.
+      Every week                 Changes the recurring schedule for all future weeks.
+                                 Also use this to ADD a new squad.
+      Reset next week            Undoes next week's one-off move for that squad, putting it
+                                 back on the recurring schedule. Day and time aren't needed.
     Tip: Daylight saving changes can shift the game server's times relative to Eastern.
-    When that happens, use permanent:True to update the recurring schedule.
+    When that happens, use Every week to update the recurring schedule.
 
-/config squad_remove squad:<n>
-    Permanently remove a squad from the schedule.
+/cq_config > 🗑️ Remove squads
+    A pop-up with a dropdown of the squads: pick one or more to remove them from the schedule
+    permanently.
 
 
 5. WEEKLY REMINDERS
@@ -230,28 +257,31 @@ The bot automatically posts the reminder (with the View my availability / No cha
 this week buttons) in the CQ channel for the upcoming week. By default it posts twice:
 Wednesday and Friday at 18:00 (bot timezone).
 
-The reminder @mentions the player role set in PLAYER_ROLE_ID (in .env). This includes
-reminders posted with /host remind_now. Leave PLAYER_ROLE_ID empty for no ping. The role
+The reminder @mentions the player role set in PLAYER_ROLE_ID (in .env.prod). This includes
+reminders posted with /cq_host > Post reminder now. Leave PLAYER_ROLE_ID empty for no ping. The role
 must allow @mentions (Server Settings > Roles > "Allow anyone to @mention this role"),
 otherwise the mention shows but nobody is notified.
 
 The reminder message is the same for everyone. Each player's personal availability appears
 only to them when they press "View my availability".
 
-/config reminders [channel] [remind_days] [remind_time] [deadline_day] [deadline_time] [enabled]
-    Run it with no options to see the current settings and this cycle's reminder and
-    deadline times. Set any option to change it. Times are 24-hour in the bot timezone.
-      remind_days    One or more days, comma-separated, e.g. "Wed, Fri" or "Thu".
-      remind_time    The same time is used for every reminder day.
+/cq_config
+    Shows the current settings and this cycle's reminder and deadline times.
+    ⏰ Reminders opens a pop-up, filled in with the current settings:
+      Channel        where the reminder is posted
+      Reminder days  pick one or more days from the dropdown
+      Reminder time  24-hour, bot timezone. The same time is used for every reminder day.
+      Deadline day / Deadline time
+    🔕 / 🔔 "Turn automatic reminders off/on" switches the automatic posting.
     Defaults: reminders Wednesday and Friday 18:00, deadline Saturday 12:00 (the week
     before the squads run).
     Changing the days or time only affects future reminders. The bot won't immediately
     post one whose new time has already passed.
     The deadline is shown in the reminder. Players can still submit after it.
 
-/host remind_now
-    Post the reminder for next week immediately, in the configured channel (or the current
-    channel if none is set). If a scheduled reminder is due at that moment, it won't
+/cq_host > 📣 Post reminder now
+    Asks first, then (when you press Post now) posts the reminder for next week immediately,
+    in the configured channel (or the current channel if none is set). If a scheduled reminder is due at that moment, it won't
     also be posted. Later scheduled reminders still go out as normal.
 
 If the bot is offline when a reminder is due, it posts the missed reminder when it comes
@@ -261,7 +291,7 @@ has already finished no longer accepts changes.
 
 6. CLASS ICONS
 --------------
-The squad details in /host availability show a class icon next to each character. The
+Prep Roster shows a class icon next to each character. The
 icons come from image files in bot_data/class_icons/ on the machine running the bot:
 
     bot_data/class_icons/DRK.png
@@ -298,7 +328,7 @@ What happens:
         damage / 1,000,000,000 x 27.5 / run minutes
     e.g. 4,027,079,300 over 24.3 minutes -> 4.55
   - The character's damage becomes the AVERAGE OF THEIR LAST 3 RUNS (change the number
-    with /config damage_logs). This is the "dmg" shown by /cq characters.
+    with /cq_config > 📊 Damage logs). This is the "dmg" shown by /cq characters.
   - The bot reacts ✅ when a log is saved. It replies only if something needs attention.
   - Names the bot can't match to a roster character are FLAGGED: the bot adds a ⚠️
     reaction and replies to you (with a ping) listing those names. Everyone else in the
@@ -307,7 +337,7 @@ What happens:
 
 The bot replies when:
   - Names aren't on the roster (⚠️, pings you). Only those names are skipped. Check the
-    spelling, or add the character (/character add or /host import), then
+    spelling, or add the character (/character > Add or /cq_config > Import roster), then
     post the same log again. Only the missing characters are added; the rest of the run
     isn't counted twice.
   - The run was already uploaded (same start and finish time). Nothing is saved twice.
@@ -317,16 +347,16 @@ Undo: delete your upload message. The bot removes that run and recalculates dama
 everyone in it. A character with no runs left goes back to their damage from the roster
 sheet, or the value they entered.
 
-Damage from logs always takes priority. /host import and /character edit dmg only
+Damage from logs always takes priority. Import roster and /character > Change (Damage) only
 change the fallback value, used while a character has no logged runs.
 
-/config damage_logs [channel] [average_runs]
-    Run it with no options to see the settings. channel: where logs are posted (default: any
-    channel named #queen-logs). average_runs: how many recent runs to average (default 3).
-    Changing this recalculates every character.
+/cq_config > 📊 Damage logs
+    /cq_config shows the settings; the button opens a pop-up. Channel: where logs are posted
+    (left empty: any channel named #queen-logs). Runs to average: how many recent runs to
+    average (1–50, default 3). Changing it recalculates every character.
 
-/host damage_history character:<IGN>
-    A character's current damage and their last 15 runs: raw damage, run length, and
+/cq_host > 📈 Damage history
+    Type the character's in-game name in the pop-up. Shows the character's current damage and their last 15 runs: raw damage, run length, and
     scaled damage. ★ marks the runs counted in the average.
 
 
@@ -334,9 +364,9 @@ change the fallback value, used while a character has no logged runs.
 ------------------
 - "Only hosts can use this command": you need the host role or the Manage Server
   permission.
-- No reminder posted: check /config reminders. Are reminders enabled, and is a channel set?
+- No reminder posted: check /cq_config. Are reminders on, and is a channel set?
   Does the bot have permission to send messages and embeds in that channel?
-- A player can't be found: /player link them to their Discord account.
-- Wrong squad times: see /host squads, then fix with /config squad_time.
+- A player can't be found: link them to their Discord account with /player > Link.
+- Wrong squad times: check them in /cq_config, then fix them with its Squad time button.
 - A damage log got no ✅ and no reply: check it was posted in the logs channel
-  (/config damage_logs), as a .txt attachment, by someone with the host role.
+  (/cq_config), as a .txt attachment, by someone with the host role.

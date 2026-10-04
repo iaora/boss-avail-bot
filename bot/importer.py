@@ -2,7 +2,8 @@
 
 The CSV is matched by column header name, not position, so the sheet can gain extra
 columns without breaking the import. Required headers: IGN, Name, Discord. Optional:
-Job, Buff, Squad, Dmg/27.5 (or Dmg), Run time, Perm, Status, and "Squad 1" ... "Squad N".
+Job, Squad, Dmg/27.5 (or Dmg), Run time, Perm, Status, and "Squad 1" ... "Squad N".
+A Buff column is ignored: the buff always comes from the job (db.JOB_BUFFS).
 """
 
 from __future__ import annotations
@@ -130,7 +131,7 @@ def import_roster(conn: sqlite3.Connection, csv_text: str) -> ImportResult:
         values = dict(
             player_id=player.id,
             job=cell(row, "job").upper(),
-            buff=cell(row, "buff").upper(),
+            buff=db.buff_for_job(cell(row, "job")),  # from the job; the sheet's Buff column isn't used
             # Sheet damage is already scaled to a 27.5-minute run (billions), the same scale as the
             # damage logs, so it is stored as-is. Dmg/27.5 is preferred; Dmg is the fallback.
             dmg=_float(cell(row, "dmg/27.5")) or _float(cell(row, "dmg")),
@@ -254,11 +255,11 @@ def seed_if_empty(conn: sqlite3.Connection, roster_csv: Path, squad_timings: Pat
                 db.set_squad_template(conn, number, weekday, hhmm, boss_id=BOSS)
             log.info("Seeded %d squads from %s", len(template), squad_timings)
         else:
-            log.warning("No squads configured and %s not found; hosts can add squads with /config squad_time (permanent: True)", squad_timings)
+            log.warning("No squads configured and %s not found; hosts can add squads with /cq_config > Squad time > Every week", squad_timings)
 
     if conn.execute("SELECT COUNT(*) FROM players").fetchone()[0] == 0:
         if roster_csv.exists():
             result = import_roster(conn, roster_csv.read_text(encoding="utf-8-sig"))
             log.info("Seeded roster from %s\n%s", roster_csv, result.summary())
         else:
-            log.warning("No players and %s not found; hosts can load one with /host import", roster_csv)
+            log.warning("No players and %s not found; hosts can load one with /cq_config > Import roster", roster_csv)

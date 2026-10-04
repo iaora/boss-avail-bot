@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=@SERVICE_USER@
 WorkingDirectory=@PROJECT_DIR@
-ExecStart=@PROJECT_DIR@/.venv/bin/python -m bot
+ExecStart=@PROJECT_DIR@/.venv/bin/python -m bot prod
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

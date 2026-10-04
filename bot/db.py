@@ -29,6 +29,13 @@ LEVELS = ("Preferred", "Available", "Not Available")
 CHARACTER_STATUSES = ("static", "sub", "inactive")
 PLAYER_STATUSES = ("active", "inactive")  # "sub" existed before migration 5; see MIGRATIONS
 BUFFS = ("DPS", "HASTE", "SE", "HSH", "SI/TL", "SI", "THORNS", "HB")
+# A character's buff always comes from its job (class); hosts never enter it. Jobs not listed here
+# have no buff (shown as "?") until they're added.
+JOB_BUFFS = {
+    "ARAN": "DPS", "BM": "SE", "BSP": "HSH", "BUCC": "SI/TL", "BW": "DPS", "DB": "THORNS", "DRK": "HB",
+    "DW": "DPS", "EVAN": "DPS", "FP": "DPS", "HERO": "DPS", "IL": "DPS", "MM": "SE", "NL": "HASTE",
+    "NW": "HASTE", "PAL": "DPS", "SAIR": "DPS", "SHAD": "HASTE", "TB": "SI", "WA": "SE",
+}
 
 MIGRATIONS: list[str] = [
     # 1: initial schema
@@ -138,7 +145,7 @@ MIGRATIONS: list[str] = [
         CHECK (status IN ('static', 'sub', 'inactive'));
     UPDATE characters SET status = CASE WHEN perm = 1 THEN 'static' ELSE 'sub' END;
     """,
-    # 4: log of character status changes, shown to hosts in /host status
+    # 4: log of character status changes, shown to hosts in /cq_host > Status
     """
     CREATE TABLE character_status_log (
         id           INTEGER PRIMARY KEY,
@@ -350,6 +357,16 @@ MIGRATIONS: list[str] = [
         level        TEXT NOT NULL CHECK (level IN ('Preferred', 'Available', 'Not Available')),
         PRIMARY KEY (boss_id, character_id, week_start, squad)
     );
+    """,
+    # 8: buffs come from the job (JOB_BUFFS as of this migration); existing characters are brought in line
+    """
+    UPDATE characters SET buff = CASE UPPER(job)
+        WHEN 'ARAN' THEN 'DPS' WHEN 'BM' THEN 'SE' WHEN 'BSP' THEN 'HSH' WHEN 'BUCC' THEN 'SI/TL'
+        WHEN 'BW' THEN 'DPS' WHEN 'DB' THEN 'THORNS' WHEN 'DRK' THEN 'HB' WHEN 'DW' THEN 'DPS'
+        WHEN 'EVAN' THEN 'DPS' WHEN 'FP' THEN 'DPS' WHEN 'HERO' THEN 'DPS' WHEN 'IL' THEN 'DPS'
+        WHEN 'MM' THEN 'SE' WHEN 'NL' THEN 'HASTE' WHEN 'NW' THEN 'HASTE' WHEN 'PAL' THEN 'DPS'
+        WHEN 'SAIR' THEN 'DPS' WHEN 'SHAD' THEN 'HASTE' WHEN 'TB' THEN 'SI' WHEN 'WA' THEN 'SE'
+        ELSE buff END;
     """,
 ]
 
@@ -569,21 +586,25 @@ def get_character(conn: sqlite3.Connection, ign: str, *, boss_id: int = CQ) -> s
     return conn.execute(_CHARACTER_SELECT + " WHERE c.ign = ?", (boss_id, ign.strip())).fetchone()
 
 
+def get_character_by_id(conn: sqlite3.Connection, character_id: int, *, boss_id: int = CQ) -> sqlite3.Row | None:
+    return conn.execute(_CHARACTER_SELECT + " WHERE c.id = ?", (boss_id, character_id)).fetchone()
+
+
 def add_character(
     conn: sqlite3.Connection,
     player_id: int,
     ign: str,
     job: str,
-    buff: str,
     dmg: float | None,
     status: str = "static",
     *,
     boss_id: int = CQ,
 ) -> None:
+    """The buff comes from the job (JOB_BUFFS)."""
     with conn:
         cur = conn.execute(
             "INSERT INTO characters (player_id, ign, job, buff) VALUES (?, ?, ?, ?)",
-            (player_id, ign.strip(), job.strip().upper(), buff),
+            (player_id, ign.strip(), job.strip().upper(), buff_for_job(job)),
         )
         conn.execute(
             "INSERT INTO character_boss (character_id, boss_id, status, dmg, base_dmg, slot_status) "
@@ -666,9 +687,13 @@ def status_changes_since(conn: sqlite3.Connection, since: int, *, boss_id: int =
 def update_character(
     conn: sqlite3.Connection, character_id: int, changed_by: int | None = None, *, boss_id: int = CQ, **fields
 ) -> None:
-    """Change a character. job, buff and player_id (owner) are shared by every boss; dmg and
-    status are for `boss_id`. A hand-entered dmg is the fallback: damage from uploaded logs wins."""
-    identity = {k: v for k, v in fields.items() if k in {"job", "buff", "player_id"} and v is not None}
+    """Change a character. job and player_id (owner) are shared by every boss; dmg and status are
+    for `boss_id`. A new job also sets the buff (JOB_BUFFS). A hand-entered dmg is the fallback:
+    damage from uploaded logs wins."""
+    identity = {k: v for k, v in fields.items() if k in {"job", "player_id"} and v is not None}
+    if "job" in identity:
+        identity["job"] = identity["job"].strip().upper()
+        identity["buff"] = buff_for_job(identity["job"])
     status, dmg = fields.get("status"), fields.get("dmg")
     with conn:
         if identity:
@@ -698,6 +723,11 @@ def delete_character(conn: sqlite3.Connection, character_id: int) -> None:
     """Remove a character everywhere (every boss's data for it goes too)."""
     with conn:
         conn.execute("DELETE FROM characters WHERE id = ?", (character_id,))
+
+
+def buff_for_job(job: str | None) -> str | None:
+    """The buff for a job (class), or None for a job that isn't in JOB_BUFFS."""
+    return JOB_BUFFS.get((job or "").strip().upper())
 
 
 def known_jobs(conn: sqlite3.Connection) -> list[str]:

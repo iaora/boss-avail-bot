@@ -80,6 +80,13 @@ def local_label(unix: int, tz: ZoneInfo, with_zone: bool = False, twelve_hour: b
     return f"{text} {local:%Z}" if with_zone else text
 
 
+def run_label(unix: int, tz: ZoneInfo) -> str:
+    """e.g. 'Sat Oct 10, 9:00 PM' in the given timezone -- for checkbox labels, which can't show
+    Discord timestamps."""
+    local = datetime.fromtimestamp(unix, timezone.utc).astimezone(tz)
+    return f"{local:%a %b} {local.day}, {local.hour % 12 or 12}:{local:%M} {local:%p}"
+
+
 def short_week_label(week_start: date) -> str:
     """e.g. 'Sun Oct 4, 2026' -- for dropdown labels, which can't show Discord timestamps."""
     return week_start.strftime("%a %b %d, %Y").replace(" 0", " ")

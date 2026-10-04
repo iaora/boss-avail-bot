@@ -28,10 +28,10 @@ echo "==> Using $PYTHON in $PROJECT_DIR"
 "$PROJECT_DIR/.venv/bin/pip" install --quiet -r "$PROJECT_DIR/requirements.txt"
 mkdir -p "$PROJECT_DIR/data"
 
-if [[ ! -f "$PROJECT_DIR/.env" ]]; then
-  cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
-  chmod 600 "$PROJECT_DIR/.env"
-  echo "!! Created $PROJECT_DIR/.env from the example. Fill in DISCORD_TOKEN (and IDs), then re-run this script."
+if [[ ! -f "$PROJECT_DIR/.env.prod" ]]; then
+  cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env.prod"
+  chmod 600 "$PROJECT_DIR/.env.prod"
+  echo "!! Created $PROJECT_DIR/.env.prod from the example. Fill in DISCORD_TOKEN (and IDs), then re-run this script."
   exit 1
 fi
 
@@ -44,7 +44,7 @@ sudo systemctl enable "$SERVICE_NAME" >/dev/null
 sudo systemctl restart "$SERVICE_NAME"
 
 # Nightly database backup at 04:00 server time (keeps the newest 14).
-CRON_LINE="0 4 * * * cd $PROJECT_DIR && .venv/bin/python -m bot.backup >> data/backup.log 2>&1"
+CRON_LINE="0 4 * * * cd $PROJECT_DIR && .venv/bin/python -m bot.backup prod >> data/backup.log 2>&1"
 ( sudo crontab -u "$SERVICE_USER" -l 2>/dev/null | grep -v 'bot.backup' || true; echo "$CRON_LINE" ) \
   | sudo crontab -u "$SERVICE_USER" - || echo "(cron not available; skipping nightly backups)"
 

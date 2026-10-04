@@ -1,4 +1,4 @@
-"""Keeps the bot's class icons in step with the CLASS_ICONS_DIR folder, in the background."""
+"""Keeps the bot's class icons in step with the bot_data/class_icons/ folder, in the background."""
 
 from __future__ import annotations
 

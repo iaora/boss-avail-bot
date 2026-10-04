@@ -83,7 +83,7 @@ class DamageLogCog(commands.Cog):
                 "⚠️ These names aren't on the roster, so their damage was **not** saved "
                 "(everyone else in the log was):\n"
                 + "\n".join(unknown)
-                + "\nCheck the spelling, or add the character (`/character add` or `/host import`), "
+                + "\nCheck the spelling, or add the character (`/character` > Add or `/cq_config` > Import roster), "
                 "then post the same log again. Only the missing characters will be added."
             )
         if problems:

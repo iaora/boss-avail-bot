@@ -32,8 +32,8 @@ Press one of its buttons:
                             change for that week if you made one, otherwise your default.
   ✅ No change              Your default schedule works this week. That's it, you're done.
   ✏️ Change weekly availability
-                            Opens the editor so you can set different availability for just
-                            this week.
+                            Opens the availability pop-up so you can set different
+                            availability for just this week.
 
 "View my availability" (and /cq availability) shows your squads grouped into 🟢 Preferred,
 🟡 Available and 🔴 Not Available, with a count for each. The top line tells you whether
@@ -52,7 +52,7 @@ you want to change. It lists next week and the 7 weeks after it, by date:
   ▫️ Week of Sunday Oct 4, 2026   Next week · Default schedule
   ✏️ Week of Sunday Oct 11, 2026  In 2 weeks · Changed
 
-  - Choose a week from "Choose a week to change…" to open the editor for that week.
+  - Choose a week from "Choose a week to change…" to open the availability pop-up for that week.
   - ✏️ marks weeks you've already changed. Pick one again to edit it.
   - "Reset a week to your default…" undoes a change: that week goes back to your
     default schedule.
@@ -61,32 +61,39 @@ Changing a future week counts as your check-in for that week, so you won't need 
 to that week's reminder (you still can if your plans change again).
 
 
-3. THE AVAILABILITY EDITOR
+3. THE AVAILABILITY POP-UP
 --------------------------
 "Change weekly availability", the week you pick with "Update a future week", "Change default
 availability", and the character you pick with "Change a character's week" or "Character
-availability" all open the same editor:
+availability" all open the same pop-up:
 
-  - The list at the top shows every squad with its time (in your timezone) and your choice.
-    The ▶ arrows mark the squads you're editing on this page.
-  - Each dropdown sets one squad. There are 4 squads per page.
-  - Use ◀ and ▶ to move between pages.
-  - Squads are listed in time order (the order they run in the week) by default. Press
-    🔀 "Sort by squad #" to list them by squad number instead, and 🔀 "Sort by time" to
-    switch back. Your choices so far are kept when you switch.
-  - Press Save when you're done. Nothing is saved until you press Save.
-    Squads you left unset are saved as Not Available.
-  - Press Cancel to close the editor without changing anything.
-  - In a character's editor, squads set differently from your default are marked ✏️, with
-    your default in brackets, e.g. "🔴 Squad 4 · ... · Not Available ✏️ (default 🟢)". The
-    marks update as you pick, so you can see exactly what you're changing.
+  - The first time, it asks for your timezone (pick it from the list). Change it any time in
+    /settings.
+  - Each checkbox shows the run and its time in your timezone, e.g.
+    "Squad 7 · Sat Oct 10, 9:00 PM". Runs are listed in your squad order (see "Squad order"
+    below).
+  - Tick the runs you'd most like under 🟢 Preferred and the others you can make under
+    🟡 Available. Discord fits at most 10 checkboxes in a group, so with more runs each
+    section is split in two: "(1 of 2)" and "(2 of 2)".
+  - Runs you leave unticked in both sections are saved as Not Available. A run ticked in both
+    is saved as Preferred.
+  - Can't make it at all? Tick "❌ Can't make any of these runs" at the top: every run is
+    saved as Not Available, whatever else is ticked.
+  - Your current choices start out ticked. Press Submit to save, or close the pop-up to
+    change nothing.
+  - For a character, each run also shows what it is otherwise, e.g. "Your default: 🟢 Preferred"
+    (Character availability) or "Usual this week: 🟡 Available" (Change a character's week).
+    Only the runs you set differently are saved for that character.
 
-The editor stays open for 15 minutes. After that, run the command again.
+If hosts ever set up more than 20 runs, they won't fit in the pop-up, and these buttons open
+a page-by-page editor instead: a dropdown per squad, 4 per page, ◀ ▶ to change page, then
+Save. It stays open for 15 minutes.
 
 
 4. COMMANDS
 -----------
-There are just two commands, both under /cq. Everything else is a button on them.
+There are three commands: /cq availability, /cq characters and /settings. Everything else is
+a button on them.
 
   /cq availability          Show your availability for next week (same view as the reminder's
                             "View my availability"), grouped by 🟢 / 🟡 / 🔴, with whether
@@ -126,6 +133,12 @@ There are just two commands, both under /cq. Everything else is a button on them
                                                       from the hosts' damage logs: its last
                                                       15 runs (★ = counted in its average)
 
+  /settings                 Your bot settings, visible only to you:
+                              🌐 Timezone     used for the run times in the availability
+                                              pop-up's checkboxes
+                              🔀 Squad order  list squads by time or by squad number
+                                              everywhere (the same as the 🔀 buttons)
+
 Character status
   Each character is one of:
     ⭐ Static     Prioritize this character when slotting.
@@ -133,15 +146,16 @@ Character status
     💤 Inactive   Not slotted, and hidden from the hosts' squad lists. Only a host can
                   set this; ask a host if a character should be (or stop being) inactive.
   Press "Set character status" in /cq characters to choose Static or Flex for each
-  character. It opens an editor like the availability one: a dropdown per character,
-  4 per page, ◀ ▶ to change page, then Save. Nothing changes until you press Save.
+  character. It opens an editor: a dropdown per character, 4 per page, ◀ ▶ to change
+  page, then Save. Nothing changes until you press Save.
   Inactive characters are shown there but can't be changed.
   Characters marked Perm on the roster sheet start as Static; the rest start as Flex.
 
 Squad order
   Every list of squads starts in time order (the order they run in the week). Press 🔀
   "Sort by squad #" on any of them to sort by squad number instead. The bot remembers your
-  choice and uses it everywhere: your availability and the editors. (The reminder in the
+  choice and uses it everywhere: your availability and the availability pop-up. You can
+  also change it in /settings. (The reminder in the
   channel is shared by everyone, so it always lists squads in time order; press "View my
   availability" on it to see them in your order.) Press 🔀 "Sort by time" to switch back.
 
@@ -156,7 +170,7 @@ characters and default schedule. The first time you press a button or run a comm
 bot links you by your Discord username.
 
 - If the bot says it can't find you, your Discord username has probably changed since
-  the roster was made. Ask a host to link you (/player link).
+  the roster was made. Ask a host to link you (/player > Link).
 - If you're brand new, ask a host to add you and your characters. Then set your usual
   availability with "Change default availability" in /cq availability.
 

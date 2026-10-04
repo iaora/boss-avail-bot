@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -204,3 +205,55 @@ def test_roster_contact_setting(monkeypatch):
     monkeypatch.delenv("ROSTER_CONTACT_ID")
     monkeypatch.setenv("ROSTER_CONTACT", "Robin")
     assert Config.from_env().roster_contact == "Robin"
+
+
+@pytest.fixture
+def restore_environ():
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+def write_env(folder, environment, **values):
+    (folder / f".env.{environment}").write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+
+
+def test_load_environment_reads_its_own_file(tmp_path, restore_environ):
+    from bot.config import Config, load_environment
+
+    for name in ("DISCORD_TOKEN", "DATABASE_PATH", "GUILD_ID"):
+        os.environ.pop(name, None)
+    write_env(tmp_path, "prod", DISCORD_TOKEN="prod-token", GUILD_ID="1")
+    write_env(tmp_path, "test", DISCORD_TOKEN="test-token", GUILD_ID="2", DATABASE_PATH="")
+
+    load_environment("test", root=tmp_path)
+    config = Config.from_env()
+    assert (config.environment, config.discord_token, config.guild_id) == ("test", "test-token", 2)
+    assert config.database_path == ROOT / "data" / "test" / "monkey_inc.db"  # its own database
+
+
+def test_load_environment_refuses_shared_token_or_database(tmp_path, restore_environ):
+    from bot.config import load_environment
+
+    write_env(tmp_path, "prod", DISCORD_TOKEN="same")
+    write_env(tmp_path, "test", DISCORD_TOKEN="same")
+    with pytest.raises(SystemExit, match="same DISCORD_TOKEN"):
+        load_environment("test", root=tmp_path)
+
+    write_env(tmp_path, "test", DISCORD_TOKEN="other", DATABASE_PATH="data/monkey_inc.db")
+    with pytest.raises(SystemExit, match="same DATABASE_PATH"):
+        load_environment("test", root=tmp_path)
+
+
+def test_load_environment_missing_file(tmp_path, restore_environ):
+    from bot.config import load_environment
+
+    with pytest.raises(SystemExit, match=r"\.env\.prod not found") as missing:
+        load_environment("prod", root=tmp_path)
+    assert "mv .env" not in str(missing.value)
+    (tmp_path / ".env").write_text("DISCORD_TOKEN=old\n")  # settings from before v4
+    with pytest.raises(SystemExit, match=r"mv \.env \.env\.prod"):
+        load_environment("prod", root=tmp_path)
+    with pytest.raises(SystemExit, match="Unknown environment"):
+        load_environment("staging", root=tmp_path)
