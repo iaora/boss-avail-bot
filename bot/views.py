@@ -121,7 +121,7 @@ def availability_lines(squads: list[db.SquadTime], availability: db.Availability
     for s in squads:
         level = availability.get(s.number)
         emoji = LEVEL_EMOJI.get(level, UNSET_EMOJI)
-        lines.append(f"{emoji} **Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}")
+        lines.append(f"{emoji} **Squad {s.number}** · {timeutil.discord_ts(s.starts_at)} · {level or 'Not set'}")
     return "\n".join(lines) or "*No squads are configured.*"
 
 
@@ -133,7 +133,7 @@ def grouped_lines(squads: list[db.SquadTime], availability: db.Availability) -> 
         if not members and level is None:
             continue
         name = level or "Not set"
-        body = "\n".join(f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')}" for s in members) or "*None*"
+        body = "\n".join(f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}" for s in members) or "*None*"
         sections.append(f"{emoji} **{name} ({len(members)})**\n{body}")
     return "\n\n".join(sections) if squads else "*No squads are configured.*"
 
@@ -145,12 +145,24 @@ def confirmation_text(kind: str | None) -> str:
     }.get(kind, "⏳ Not confirmed yet")
 
 
+def checkin_banner(kind: str | None, week_start: date) -> str:
+    """The first line of a player's availability: whether they've checked in for the week."""
+    if kind == "no_change":
+        return "✅ **You're checked in:** using your default schedule."
+    if kind == "updated":
+        return "✅ **You're checked in:** you changed this week."
+    return (
+        f"⏳ **You haven't checked in for the {timeutil.week_label(week_start)} yet.**\n"
+        "Press **No change** if your default works, or **Change weekly availability**."
+    )
+
+
 def player_summary_embed(
     bot: "MonkeyBot", player: db.Player, week_start: date, order: str | None = None, layout: str | None = None
 ) -> discord.Embed:
-    """A player's availability for one week (their change for that week, else their default)."""
+    """A player's availability for one week (their change for that week, else their default),
+    grouped by level, with their check-in status at the top. (`layout` is no longer used.)"""
     order = order or get_squad_order(bot.conn, player.discord_id)
-    layout = layout or get_layout(bot.conn, player.id)
     squads = order_squads(db.squads_for_week(bot.conn, week_start, bot.tz), order)
     default = db.get_default_availability(bot.conn, player.id)
     availability, source = db.effective_week_availability(bot.conn, player.id, week_start)
@@ -161,13 +173,11 @@ def player_summary_embed(
         if source == "weekly"
         else "*Your default schedule*"
     )
-    body = grouped_lines(squads, availability) if layout == "grouped" else availability_lines(squads, availability)
     embed = discord.Embed(
         title=f"{player.name}: {timeutil.week_label(week_start)}",
-        description=f"{note}\n\n{body}",
+        description=f"{checkin_banner(kind, week_start)}\n\n{note}\n\n{grouped_lines(squads, availability)}",
         color=EMBED_COLOR,
     )
-    embed.add_field(name="Check-in", value=confirmation_text(kind), inline=False)
     if source == "weekly":
         diffs = [
             f"Squad {s.number}: {LEVEL_EMOJI.get(default.get(s.number), UNSET_EMOJI)} → "
@@ -177,6 +187,16 @@ def player_summary_embed(
         ]
         if diffs:
             embed.add_field(name="Different from your default", value="\n".join(diffs)[:1024], inline=False)
+    char_changes = db.characters_changed_for_week(bot.conn, player.id, week_start)
+    if char_changes:
+        embed.add_field(
+            name="Characters changed for this week",
+            value="\n".join(
+                f"🧩 **{ign}**: " + ", ".join(f"Squad {n} {LEVEL_EMOJI[lvl]}" for n, lvl in sorted(changes.items()))
+                for ign, changes in char_changes.items()
+            )[:1024],
+            inline=False,
+        )
     later = [w for w in db.weeks_with_changes(bot.conn, player.id, week_start) if w != week_start]
     if later:
         embed.add_field(
@@ -185,10 +205,8 @@ def player_summary_embed(
             inline=False,
         )
     sorted_by = "time" if order == "time" else "squad number"
-    shown_as = "full list" if layout == "list" else "grouped by availability"
     embed.set_footer(
-        text=f"Status: {player.status} · Sorted by {sorted_by} · Showing {shown_as} · "
-        "🟢 Preferred  🟡 Available  🔴 Not Available"
+        text=f"Status: {player.status} · Sorted by {sorted_by} · 🟢 Preferred  🟡 Available  🔴 Not Available"
     )
     return embed
 
@@ -248,21 +266,29 @@ async def send_reminder(bot: "MonkeyBot", channel: discord.abc.Messageable, week
 BUTTONS = {
     "view": ("View my availability", discord.ButtonStyle.secondary, "📋"),
     "nochange": ("No change", discord.ButtonStyle.success, "✅"),
-    "update": ("Update this week", discord.ButtonStyle.primary, "✏️"),
-    "default": ("Update my default", discord.ButtonStyle.secondary, "🛠️"),
-    "plan": ("Update a week", discord.ButtonStyle.primary, "🗓️"),
-    "chars": ("Character availability", discord.ButtonStyle.secondary, "🧩"),
+    "update": ("Change weekly availability", discord.ButtonStyle.primary, "✏️"),
+    "default": ("Change default availability", discord.ButtonStyle.secondary, "🛠️"),
+    "plan": ("Update a future week", discord.ButtonStyle.primary, "🗓️"),
+    "chars": ("Character availability", discord.ButtonStyle.secondary, "🧩"),  # ongoing (in /cq characters)
+    "charweek": ("Change a character's week", discord.ButtonStyle.secondary, "🧩"),  # this week only
+}
+
+# How the check-in button looks on a player's availability, by their check-in status for the week
+CHECKIN_BUTTON = {
+    None: ("No change", discord.ButtonStyle.success, "✅"),  # not checked in: prompt them
+    "no_change": ("Checked in", discord.ButtonStyle.secondary, "✅"),
+    "updated": ("Use my default", discord.ButtonStyle.secondary, "↩️"),  # changed the week; can switch back
 }
 
 
 class ReminderButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"avail:(?P<action>view|nochange|update|default|plan|chars)(?::(?P<week>\d{4}-\d{2}-\d{2}))?",
+    template=r"avail:(?P<action>view|nochange|update|default|plan|chars|charweek)(?::(?P<week>\d{4}-\d{2}-\d{2}))?",
 ):
     """Buttons whose state lives in the custom_id, so they keep working after a bot restart."""
 
-    def __init__(self, action: str, week: str | None = None, row: int | None = None):
-        label, style, emoji = BUTTONS[action]
+    def __init__(self, action: str, week: str | None = None, row: int | None = None, look: tuple | None = None):
+        label, style, emoji = look or BUTTONS[action]
         custom_id = f"avail:{action}" + (f":{week}" if week else "")
         super().__init__(discord.ui.Button(label=label, style=style, emoji=emoji, custom_id=custom_id, row=row))
         self.action = action
@@ -280,7 +306,9 @@ class ReminderButton(
             return
 
         week = self.week or timeutil.upcoming_week_start(timeutil.now_utc(), bot.tz)
-        if self.action in ("nochange", "update") and week < timeutil.current_week_start(timeutil.now_utc(), bot.tz):
+        if self.action in ("nochange", "update", "charweek") and week < timeutil.current_week_start(
+            timeutil.now_utc(), bot.tz
+        ):
             await interaction.response.send_message(
                 "This reminder is for a week that has already finished.", ephemeral=True
             )
@@ -290,12 +318,18 @@ class ReminderButton(
             await send_player_summary(interaction, bot, player, week)
         elif self.action == "nochange":
             db.confirm_no_change(bot.conn, player.id, week)
-            embed = player_summary_embed(bot, player, week, get_squad_order(bot.conn, interaction.user.id))
-            await interaction.response.send_message(
-                f"Thanks, {player.name}! Your default schedule will be used for the {timeutil.week_label(week)}.",
-                embed=embed,
-                ephemeral=True,
-            )
+            message = interaction.message
+            if message is not None and message.flags.ephemeral:
+                # pressed on the player's own availability: refresh it, so the check-in shows
+                await rerender_summary(interaction, bot, player, week)
+            else:  # pressed on the shared reminder: reply privately
+                order = get_squad_order(bot.conn, interaction.user.id)
+                await interaction.response.send_message(
+                    f"Thanks, {player.name}! Your default schedule will be used for the {timeutil.week_label(week)}.",
+                    embed=player_summary_embed(bot, player, week, order),
+                    view=player_summary_view(bot, player, week, order),
+                    ephemeral=True,
+                )
         elif self.action == "update":
             await open_weekly_editor(interaction, bot, player, week)
         elif self.action == "default":
@@ -304,6 +338,8 @@ class ReminderButton(
             await WeekPicker(bot, player).send(interaction)
         elif self.action == "chars":
             await CharacterPicker(bot, player, week).send(interaction)
+        elif self.action == "charweek":
+            await CharacterPicker(bot, player, week, this_week_only=True).send(interaction)
 
 
 class SortToggleButton(
@@ -414,32 +450,34 @@ class SquadTimesButton(
 
 
 async def rerender_summary(interaction: discord.Interaction, bot: "MonkeyBot", player: db.Player, week: date) -> None:
-    order, layout = get_squad_order(bot.conn, interaction.user.id), get_layout(bot.conn, player.id)
+    order = get_squad_order(bot.conn, interaction.user.id)
     await interaction.response.edit_message(
-        embed=player_summary_embed(bot, player, week, order, layout), view=player_summary_view(week, order, layout)
+        embed=player_summary_embed(bot, player, week, order), view=player_summary_view(bot, player, week, order)
     )
 
 
-def player_summary_view(week: date, order: str, layout: str) -> discord.ui.View:
+def player_summary_view(bot: "MonkeyBot", player: db.Player, week: date, order: str) -> discord.ui.View:
+    """Row 1: check in / change this week / change a character's week / a future week.
+    Row 2: sort order / change the default schedule."""
     view = discord.ui.View(timeout=None)
     wk = week.isoformat()
-    # row 0: actions; row 1: how the list is shown
-    view.add_item(ReminderButton("nochange", wk, row=0))
+    kind = db.get_confirmation(bot.conn, player.id, week)
+    view.add_item(ReminderButton("nochange", wk, row=0, look=CHECKIN_BUTTON[kind]))
+    view.add_item(ReminderButton("update", wk, row=0))
+    view.add_item(ReminderButton("charweek", wk, row=0))
     view.add_item(ReminderButton("plan", row=0))
-    view.add_item(ReminderButton("default", wk, row=0))
-    view.add_item(ReminderButton("chars", wk, row=0))
     view.add_item(SortToggleButton(other_order(order), wk, row=1))
-    view.add_item(LayoutToggleButton(other_layout(layout), wk, row=1))
+    view.add_item(ReminderButton("default", wk, row=1))
     return view
 
 
 async def send_player_summary(
     interaction: discord.Interaction, bot: "MonkeyBot", player: db.Player, week: date
 ) -> None:
-    order, layout = get_squad_order(bot.conn, interaction.user.id), get_layout(bot.conn, player.id)
+    order = get_squad_order(bot.conn, interaction.user.id)
     await interaction.response.send_message(
-        embed=player_summary_embed(bot, player, week, order, layout),
-        view=player_summary_view(week, order, layout),
+        embed=player_summary_embed(bot, player, week, order),
+        view=player_summary_view(bot, player, week, order),
         ephemeral=True,
     )
 
@@ -546,28 +584,51 @@ async def open_default_editor(interaction: discord.Interaction, bot: "MonkeyBot"
 
 
 async def open_character_editor(
-    interaction: discord.Interaction, bot: "MonkeyBot", player: db.Player, character, week: date, *, replace=False
+    interaction: discord.Interaction,
+    bot: "MonkeyBot",
+    player: db.Player,
+    character,
+    week: date,
+    *,
+    replace=False,
+    this_week_only=False,
 ) -> None:
-    base = db.get_default_availability(bot.conn, player.id)
-    initial = {**base, **db.get_character_overrides(bot.conn, character["id"])}
-    editor = AvailabilityEditor(bot, mode="character", player=player, week=week, initial=initial, character=character)
+    """Edit a character's ongoing exceptions (compared with the player's default), or with
+    `this_week_only`, its availability for just `week` (compared with its usual for that week)."""
+    if this_week_only:
+        usual = db.character_week_availability(bot.conn, character, week, include_week_changes=False)
+        initial = {**usual, **db.get_character_weekly(bot.conn, character["id"], week)}
+        mode = "character_week"
+    else:
+        usual = db.get_default_availability(bot.conn, player.id)
+        initial = {**usual, **db.get_character_overrides(bot.conn, character["id"])}
+        mode = "character"
+    editor = AvailabilityEditor(
+        bot, mode=mode, player=player, week=week, initial=initial, character=character, base=usual
+    )
     await editor.send(interaction, replace=replace)
 
 
 class CharacterPicker(discord.ui.View):
-    """From /cq availability: pick one of your characters to give it its own availability."""
+    """Pick one of your characters to change its availability: its ongoing exceptions (from
+    /cq characters), or with `this_week_only`, just the given week (from /cq availability)."""
 
-    def __init__(self, bot: "MonkeyBot", player: db.Player, week: date):
+    def __init__(self, bot: "MonkeyBot", player: db.Player, week: date, this_week_only: bool = False):
         super().__init__(timeout=900)
         self.bot = bot
         self.player = player
         self.week = week
+        self.this_week_only = this_week_only
         self.characters = {c["id"]: c for c in db.list_characters(bot.conn, player.id)}
         options = []
         for c in list(self.characters.values())[:25]:  # Discord allows 25 options per dropdown
-            overrides = db.get_character_overrides(bot.conn, c["id"])
             emoji, status, _ = CHARACTER_STATUS_INFO[c["status"]]
-            detail = f"{len(overrides)} squad(s) differ from your default" if overrides else "Follows your default"
+            if this_week_only:
+                changed = db.get_character_weekly(bot.conn, c["id"], week)
+                detail = f"{len(changed)} squad(s) changed this week" if changed else "No changes this week"
+            else:
+                overrides = db.get_character_overrides(bot.conn, c["id"])
+                detail = f"{len(overrides)} squad(s) differ from your default" if overrides else "Follows your default"
             options.append(
                 discord.SelectOption(
                     label=f"{c['ign']} ({c['job'] or '?'})"[:100], value=str(c["id"]),
@@ -580,6 +641,14 @@ class CharacterPicker(discord.ui.View):
             self.add_item(select)
 
     def embed(self) -> discord.Embed:
+        if self.this_week_only:
+            return discord.Embed(
+                title=f"Change a character's availability: {timeutil.week_label(self.week)}",
+                description="Change one character's availability for **this week only**, e.g. if your DRK "
+                "can't make Saturday this week. It goes back to normal the week after. Pick a character below. "
+                "(To change a character every week, use Character availability in /cq characters.)",
+                color=EMBED_COLOR,
+            )
         return discord.Embed(
             title="Character availability",
             description="Give one character a schedule that differs from your default, e.g. if you can "
@@ -599,7 +668,9 @@ class CharacterPicker(discord.ui.View):
     async def _pick(self, interaction: discord.Interaction) -> None:
         character = self.characters[int(interaction.data["values"][0])]
         self.stop()
-        await open_character_editor(interaction, self.bot, self.player, character, self.week, replace=True)
+        await open_character_editor(
+            interaction, self.bot, self.player, character, self.week, replace=True, this_week_only=self.this_week_only
+        )
 
 
 class AvailabilityEditor(discord.ui.View):
@@ -610,7 +681,17 @@ class AvailabilityEditor(discord.ui.View):
 
     PAGE_SIZE = 4
 
-    def __init__(self, bot: "MonkeyBot", *, mode: str, player: db.Player, week: date, initial: db.Availability, character=None):
+    def __init__(
+        self,
+        bot: "MonkeyBot",
+        *,
+        mode: str,
+        player: db.Player,
+        week: date,
+        initial: db.Availability,
+        character=None,
+        base: db.Availability | None = None,
+    ):
         super().__init__(timeout=900)
         self.bot = bot
         self.mode = mode
@@ -620,8 +701,11 @@ class AvailabilityEditor(discord.ui.View):
         self.order = get_squad_order(bot.conn, player.discord_id)
         self.squads = order_squads(db.squads_for_week(bot.conn, week, bot.tz), self.order)
         self.draft: db.Availability = {s.number: initial[s.number] for s in self.squads if s.number in initial}
-        # character mode: the player's default, to mark squads where this character differs (✏️)
-        self.default = db.get_default_availability(bot.conn, player.id) if mode == "character" else {}
+        # character modes: what each squad is without the character's change (the player's default, or
+        # the character's usual for this week), to mark squads where it differs (✏️)
+        if base is None and mode == "character":
+            base = db.get_default_availability(bot.conn, player.id)
+        self.default = base or {}
         self.page = 0
         self._rebuild()
 
@@ -638,11 +722,17 @@ class AvailabilityEditor(discord.ui.View):
             return f"Your availability for the {timeutil.week_label(self.week)}"
         if self.mode == "default":
             return "Your default availability"
+        if self.mode == "character_week":
+            return f"{self.character['ign']}: {timeutil.week_label(self.week)} only"
         return f"Availability for {self.character['ign']} (overrides your default)"
 
+    @property
+    def _compare_label(self) -> str:
+        return "usual" if self.mode == "character_week" else "default"
+
     def _differs(self, squad: int, level: str | None) -> bool:
-        """Character mode: this squad's level differs from the player's default (unset saves as Not Available)."""
-        return self.mode == "character" and (level or "Not Available") != self.default.get(squad)
+        """Character modes: this squad differs from what it'd otherwise be (unset saves as Not Available)."""
+        return self.mode in ("character", "character_week") and (level or "Not Available") != self.default.get(squad)
 
     def _lines(self, levels: db.Availability, on_page: set[int] = frozenset()) -> str:
         lines = []
@@ -652,17 +742,20 @@ class AvailabilityEditor(discord.ui.View):
             changed = ""
             if self._differs(s.number, level):
                 default = self.default.get(s.number)
-                changed = f" ✏️ (default {LEVEL_EMOJI.get(default, UNSET_EMOJI)})"
+                changed = f" ✏️ ({self._compare_label} {LEVEL_EMOJI.get(default, UNSET_EMOJI)})"
             lines.append(
                 f"{marker}{LEVEL_EMOJI.get(level, UNSET_EMOJI)} **Squad {s.number}** · "
-                f"{timeutil.discord_ts(s.starts_at, 'f')} · {level or 'Not set'}{changed}"
+                f"{timeutil.discord_ts(s.starts_at)} · {level or 'Not set'}{changed}"
             )
         return "\n".join(lines)
 
     def embed(self) -> discord.Embed:
         on_page = {s.number for s in self.page_squads()}
         embed = discord.Embed(title=self.title(), description=self._lines(self.draft, on_page), color=EMBED_COLOR)
-        legend = " ✏️ = differs from your default (shown in brackets) ·" if self.mode == "character" else ""
+        legend = {
+            "character": " ✏️ = differs from your default (shown in brackets) ·",
+            "character_week": " ✏️ = changed for this week (usual in brackets) ·",
+        }.get(self.mode, "")
         embed.set_footer(
             text=f"Page {self.page + 1}/{self.page_count} · Sorted by "
             f"{'time' if self.order == 'time' else 'squad number'} ·{legend} Pick a level for each squad, use ◀ ▶ to "
@@ -735,6 +828,15 @@ class AvailabilityEditor(discord.ui.View):
         elif self.mode == "default":
             db.set_default_availability(conn, self.player.id, full)
             message = "✅ Saved your default availability."
+        elif self.mode == "character_week":
+            changes = {n: lvl for n, lvl in full.items() if self.default.get(n) != lvl}
+            db.set_character_weekly(conn, self.player.id, self.character["id"], self.week, changes)
+            message = (
+                f"✅ Changed {len(changes)} squad(s) for {self.character['ign']}, for the "
+                f"{timeutil.week_label(self.week)} only."
+                if changes
+                else f"✅ {self.character['ign']} is back to normal for the {timeutil.week_label(self.week)}."
+            )
         else:
             base = db.get_default_availability(conn, self.player.id)
             overrides = {n: lvl for n, lvl in full.items() if base.get(n) != lvl}
@@ -748,6 +850,8 @@ class AvailabilityEditor(discord.ui.View):
         embed = discord.Embed(title=self.title(), description=self._lines(full), color=EMBED_COLOR)
         if self.mode == "character":
             embed.set_footer(text="✏️ = differs from your default (shown in brackets)")
+        elif self.mode == "character_week":
+            embed.set_footer(text="✏️ = changed for this week (usual in brackets)")
         await interaction.response.edit_message(content=message, embed=embed, view=None)
 
 
@@ -886,7 +990,7 @@ def damage_history_embed(conn, char, *, boss_id: int = db.CQ) -> discord.Embed:
     ).fetchall()
     averaged = damage.average_runs(conn, boss_id=boss_id)
     lines = [
-        f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'], 'd')} · "
+        f"{'★ ' if i < averaged else ''}{timeutil.discord_ts(r['started_at'])} · "
         f"{r['damage'] / 1e9:.2f}B in {(r['finished_at'] - r['started_at']) / 60:.1f} min → **{r['normalized']:.2f}**"
         for i, r in enumerate(runs)
     ]

@@ -120,3 +120,132 @@ def test_open_availability_button(tmp_path):
     asyncio.run(button.callback(refused))
     assert refused.response.sent == [{"content": "Only hosts can use this.", "ephemeral": True}]
     bot.conn.close()
+
+
+class EditResponse(FakeResponse):
+    def __init__(self):
+        super().__init__()
+        self.edits = []
+
+    async def edit_message(self, **kwargs):
+        self.edits.append(kwargs)
+
+
+def press(bot, user_id=1, values=None):
+    return SimpleNamespace(response=EditResponse(), user=SimpleNamespace(id=user_id), data={"values": values or []})
+
+
+def test_see_individual_availability(tmp_path):
+    import discord
+
+    from bot.cogs.host import IndividualAvailabilityView
+
+    bot = MonkeyBot(dataclasses.replace(Config.from_env(), database_path=tmp_path / "changes_view.db"))
+    conn = bot.conn
+    for number, weekday, hhmm in [(1, 0, "12:00"), (2, 1, "11:00"), (3, 4, "21:00")]:
+        db.set_squad_template(conn, number, weekday, hhmm)
+    changer = db.create_player(conn, name="Changer", discord_handle="@changer")
+    same = db.create_player(conn, name="Same", discord_handle="@same")
+    db.create_player(conn, name="Keeper", discord_handle="@keeper")
+    db.set_default_availability(conn, changer.id, {1: "Preferred", 2: "Available", 3: "Preferred"})
+    db.set_weekly_availability(conn, changer.id, WEEK, {1: "Not Available", 2: "Available", 3: "Available"})
+    db.set_default_availability(conn, same.id, {1: "Preferred"})
+    db.set_weekly_availability(conn, same.id, WEEK, {1: "Preferred"})  # re-saved without changing anything
+    cog = HostCog(bot)
+    cog._week = lambda _choice: WEEK
+    bot.is_host = lambda interaction: True
+
+    # the status message has buttons only: no dropdown
+    status = SimpleNamespace(response=FakeResponse())
+    asyncio.run(HostCog.status.callback(cog, status, None))
+    view = status.response.sent[0]["view"]
+    assert not [c for c in view.children if isinstance(c, discord.ui.Select)]
+    assert [c.label for c in view.children] == ["See individual availability", "Open availability"]
+
+    # the button opens ONE message with the player dropdown
+    opened = press(bot)
+    asyncio.run(view.children[0].callback(opened))
+    [sent] = opened.response.sent
+    picker = sent["view"]
+    # (compared by name: other tests reload the cog module, which makes a second copy of the class)
+    assert type(picker).__name__ == IndividualAvailabilityView.__name__ and sent["ephemeral"]
+    assert "Pick one below" in sent["embed"].description
+    [select] = picker.children  # no sort button until someone is picked
+    assert {o.label: o.description for o in select.options} == {
+        "Changer (@changer)": "2 squad(s) changed from their default",
+        "Same (@same)": "0 squad(s) changed from their default",
+    }
+
+    # picking a player EDITS that message in place (no new message)
+    pick = press(bot, values=[str(changer.id)])
+    asyncio.run(picker._pick(pick))
+    assert pick.response.sent == []
+    [edit] = pick.response.edits
+    changes = edit["embed"].fields[0]
+    assert changes.name == "✏️ Changed from default"
+    lines = changes.value.strip().split("\n")
+    assert len(lines) == 2
+    assert lines[0].startswith("• **Squad 1**") and lines[0].endswith("🟢 Preferred → 🔴 Not Available")
+    assert lines[1].startswith("• **Squad 3**") and lines[1].endswith("🟢 Preferred → 🟡 Available")
+    assert "Changer (@changer)" in edit["embed"].title
+    options = {o.label: o.default for o in edit["view"].children[0].options}
+    assert options == {"Changer (@changer)": True, "Same (@same)": False}  # dropdown stays, shows who's picked
+    assert [c.label for c in edit["view"].children[1:]] == ["Sort by squad #"]
+
+    # picking someone else edits it again
+    pick_same = press(bot, values=[str(same.id)])
+    asyncio.run(picker._pick(pick_same))
+    assert pick_same.response.sent == []
+    assert "Same as their default" in pick_same.response.edits[0]["embed"].fields[0].value
+
+    # 🔀 re-sorts in place
+    sort = press(bot)
+    asyncio.run(picker._toggle_order(sort))
+    assert sort.response.sent == [] and picker.order == "number"
+    assert [c.label for c in sort.response.edits[0]["view"].children[1:]] == ["Sort by time"]
+
+    # hosts only
+    bot.is_host = lambda interaction: False
+    refused = press(bot, user_id=2, values=[str(changer.id)])
+    asyncio.run(picker._pick(refused))
+    assert refused.response.sent == [{"content": "Only hosts can use this.", "ephemeral": True}]
+    conn.close()
+
+
+def test_no_individual_button_when_no_one_changed(tmp_path):
+    bot = MonkeyBot(dataclasses.replace(Config.from_env(), database_path=tmp_path / "none.db"))
+    db.create_player(bot.conn, name="Keeper", discord_handle="@keeper")
+    cog = HostCog(bot)
+    cog._week = lambda _choice: WEEK
+    status = SimpleNamespace(response=FakeResponse())
+    asyncio.run(HostCog.status.callback(cog, status, None))
+    assert [c.label for c in status.response.sent[0]["view"].children] == ["Open availability"]
+    bot.conn.close()
+
+
+def test_changes_view_includes_character_week_changes(tmp_path):
+    import discord
+
+    bot = MonkeyBot(dataclasses.replace(Config.from_env(), database_path=tmp_path / "charweek.db"))
+    conn = bot.conn
+    db.set_squad_template(conn, 1, 0, "12:00")
+    db.set_squad_template(conn, 2, 1, "11:00")
+    player = db.create_player(conn, name="Pat", discord_handle="@pat")
+    db.add_character(conn, player.id, "Ace", "NL", "DPS", 3.0)
+    db.set_default_availability(conn, player.id, {1: "Preferred", 2: "Preferred"})
+    ace = db.get_character(conn, "Ace")
+    db.set_character_weekly(conn, player.id, ace["id"], WEEK, {2: "Not Available"})  # checks them in too
+    cog = HostCog(bot)
+    cog._week = lambda _choice: WEEK
+
+    from bot.cogs.host import IndividualAvailabilityView
+
+    picker = IndividualAvailabilityView(cog, WEEK, [player], user_id=1)
+    [select] = [c for c in picker.children if isinstance(c, discord.ui.Select)]
+    assert select.options[0].description == "0 squad(s) changed from their default · 1 character(s) changed"
+
+    embed = cog._changes_embed(player, WEEK)
+    assert embed.fields[0].value.startswith("*Their own schedule is the same as their default")
+    assert embed.fields[1].name == "🧩 Characters changed for this week"
+    assert embed.fields[1].value.strip() == "• 🧩 **Ace**: Squad 2 🔴 Not Available"
+    conn.close()

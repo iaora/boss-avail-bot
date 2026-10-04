@@ -18,7 +18,7 @@ Default schedule vs. weekly availability
   whenever you haven't said otherwise.
 - WEEKLY availability overrides your default for one week only. Use it when your plans
   change for a particular week. You can submit it for next week, or up to 7 weeks after
-  that if you already know you'll be busy (the "Update a week" button in /cq availability).
+  that if you already know you'll be busy (the "Update a future week" button in /cq availability).
 - A new week starts on Sunday. "Next week" always means the week starting on the coming Sunday.
 
 
@@ -31,24 +31,22 @@ Press one of its buttons:
   📋 View my availability   Shows YOUR availability for that week, visible only to you: your
                             change for that week if you made one, otherwise your default.
   ✅ No change              Your default schedule works this week. That's it, you're done.
-  ✏️ Update this week       Opens the editor so you can set different availability for just
+  ✏️ Change weekly availability
+                            Opens the editor so you can set different availability for just
                             this week.
 
-In "View my availability" you can switch how your squads are shown:
-  📊 Group by availability   Squads sectioned into 🟢 Preferred, 🟡 Available and
-                             🔴 Not Available, with a count for each.
-  📊 Show full list          Every squad in order, each with its colored circle.
-  🔀 Sort by time / squad #  The order of squads (within each section when grouped).
-The bot remembers your choices for next time. If you changed that week, a "Different from
-your default" list shows which squads you changed (e.g. Squad 1: 🟢 → 🔴).
+"View my availability" (and /cq availability) shows your squads grouped into 🟢 Preferred,
+🟡 Available and 🔴 Not Available, with a count for each. The top line tells you whether
+you've checked in for the week. If you changed that week, a "Different from your default"
+list shows which squads you changed (e.g. Squad 1: 🟢 → 🔴).
 
-Please press either "No change" or "Update this week" before the deadline, so the hosts
-know you've checked in. You can press them again later to change your answer.
+Please press either "No change" or "Change weekly availability" before the deadline, so the
+hosts know you've checked in. You can press them again later to change your answer.
 
 
 2. CHANGING A FUTURE WEEK
 -------------------------
-The 🗓️ "Update a week" button in /cq availability first asks WHICH week
+The 🗓️ "Update a future week" button in /cq availability first asks WHICH week
 you want to change. It lists next week and the 7 weeks after it, by date:
 
   ▫️ Week of Sunday Oct 4, 2026   Next week · Default schedule
@@ -65,8 +63,9 @@ to that week's reminder (you still can if your plans change again).
 
 3. THE AVAILABILITY EDITOR
 --------------------------
-"Update this week", the week you pick with "Update a week", "Update my default", and the
-character you pick with "Character availability" all open the same editor:
+"Change weekly availability", the week you pick with "Update a future week", "Change default
+availability", and the character you pick with "Change a character's week" or "Character
+availability" all open the same editor:
 
   - The list at the top shows every squad with its time (in your timezone) and your choice.
     The ▶ arrows mark the squads you're editing on this page.
@@ -90,30 +89,39 @@ The editor stays open for 15 minutes. After that, run the command again.
 There are just two commands, both under /cq. Everything else is a button on them.
 
   /cq availability          Show your availability for next week (same view as the reminder's
-                            "View my availability"), your check-in status, and any later
-                            weeks you've changed. Buttons:
-                              No change               your default works for next week
-                              Update a week           change next week or up to 7 weeks
-                                                      ahead (you pick the week first; see
-                                                      section 2)
-                              Update my default       change your usual schedule, used for
-                                                      every week you don't change
-                              Character availability  give one character a schedule that
-                                                      differs from your default, e.g. you
-                                                      can only bring your DRK on weekends.
-                                                      Pick the character, then change only
-                                                      the squads that differ; the rest keep
-                                                      following your default.
-                            Below them, 🔀 switches between time and squad-number order,
-                            and 📊 between the full list and grouped by availability.
+                            "View my availability"), grouped by 🟢 / 🟡 / 🔴, with whether
+                            you've checked in at the top and any later weeks you've changed.
+                            First row of buttons:
+                              No change / Checked in / Use my default
+                                  Not checked in yet: a green "No change" (your default works
+                                  for the week). Once you're checked in it turns grey: "Checked
+                                  in", or "Use my default" if you changed the week (press it to
+                                  undo your changes for that week).
+                              Change weekly availability
+                                  change your availability for the week shown
+                              Change a character's week
+                                  change one character's availability for the week shown only,
+                                  e.g. your DRK can't make Saturday this week. It's back to
+                                  normal the week after. Counts as checking in.
+                              Update a future week
+                                  change next week or up to 7 weeks ahead (you pick the week
+                                  first; see section 2)
+                            Second row:
+                              🔀 Sort by squad # / time
+                              Change default availability
+                                  change your usual schedule, used for every week you don't
+                                  change
 
   /cq characters            List your characters (status, job, buff, damage, squad). Damage
                             is the average of your recent runs from the hosts' damage logs.
+                            It also says who to message to add new characters.
                             Buttons:
                               Set character status    mark characters static or flex
                                                       (see below)
-                              Character availability  same as in /cq availability: pick a
-                                                      character and give it its own schedule
+                              Character availability  give one character an ongoing schedule
+                                                      that differs from your default, e.g. you
+                                                      can only bring your DRK on weekends (every
+                                                      week, until you change it)
                               Damage history          pick a character to see its damage
                                                       from the hosts' damage logs: its last
                                                       15 runs (★ = counted in its average)
@@ -150,21 +158,22 @@ bot links you by your Discord username.
 - If the bot says it can't find you, your Discord username has probably changed since
   the roster was made. Ask a host to link you (/player link).
 - If you're brand new, ask a host to add you and your characters. Then set your usual
-  availability with "Update my default" in /cq availability.
+  availability with "Change default availability" in /cq availability.
 
 
 FAQ
 ---
 Q: I pressed "No change" but then my plans changed.
-A: Press "Update this week" (or "Update a week" in /cq availability) and save your new availability. Your
+A: Press "Change weekly availability" (or "Update a future week" in /cq availability) and save your new availability. Your
    latest answer is the one that counts.
 
 Q: I submitted a weekly update by mistake and want my default back.
-A: For next week, press "No change". For any week, press "Update a week" in /cq availability and pick the week under
+A: For next week, press "Use my default" in /cq availability (it also undoes character changes
+   for that week). For any week, press "Update a future week" and pick the week under
    "Reset a week to your default…".
 
 Q: I'm away in three weeks. Can I tell the hosts now?
-A: Yes. Press "Update a week" in /cq availability, choose that week, and set it to Not Available.
+A: Yes. Press "Update a future week" in /cq availability, choose that week, and set it to Not Available.
 
 Q: Does updating my default change a week I've already submitted?
 A: No. A weekly update always wins for that week. Your default applies to weeks where you

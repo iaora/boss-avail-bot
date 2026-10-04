@@ -45,11 +45,62 @@ Run the tests with `.venv/bin/python -m pytest`.
    server ID (`GUILD_ID`), the host role ID (`HOST_ROLE_ID`), and the player role to ping
    in reminders (`PLAYER_ROLE_ID`). For the ping to notify people, the player role needs
    **Allow anyone to @mention this role** turned on (Server Settings > Roles).
+   Optionally set `ROSTER_CONTACT_ID` to who players should message about new characters: their
+   **user ID, just the digits** (right-click them > Copy User ID), which shows as a clickable
+   @mention, or a plain name. Don't add `<@ >`. It appears in `/cq characters` and defaults
+   to "a host".
 5. Show the host commands to hosts. `/host`, `/config`, `/player` and `/character` are
    hidden from everyone without Manage Server. Go to Server Settings > Integrations >
    Monkey Inc. > Manage, click each of the four, and allow the host role (see
    host_guide.txt, "Who can see the host commands"). Optionally copy the CQ
    channel ID too (`CQ_CHANNEL_ID`), or set it later with `/config reminders`.
+
+## Development vs production bots
+
+Use a **separate test bot and test server** for trying out changes, so the bot in the official
+server (production) is never affected.
+
+Don't run the production bot's token in two places. If two programs log in with the same token,
+both answer every button press, and players get "interaction failed" or duplicate replies. The two
+servers would also share one database, so test clicks would change real players' data.
+
+1. **Create a second Discord application** (e.g. "Monkey Inc Test") in the Developer Portal and
+   follow the one-time setup above:
+   - reset and copy its token,
+   - turn on Message Content Intent,
+   - invite it to your **test server** with the same scopes and permissions.
+2. **Make a second working copy** of the repo with a git worktree (a second folder on the same
+   repository, checked out at whichever branch you want to test):
+   ```bash
+   cd ~/Projects/boss-avail-bot
+   git worktree add ../boss-avail-bot-test <branch-to-test>
+   cd ../boss-avail-bot-test
+   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+   ln -s ../boss-avail-bot/bot_data bot_data   # reuse the roster CSV, squad timings and class icons
+   cp ../boss-avail-bot/.env .env
+   ```
+3. **Point the test copy's `.env` at the test server:**
+   - `DISCORD_TOKEN` is the **test bot's** token.
+   - `GUILD_ID`, `HOST_ROLE_ID`, `PLAYER_ROLE_ID`, `CQ_CHANNEL_ID` and `QUEEN_LOGS_CHANNEL_ID` are
+     the test server's IDs. Every server has its own.
+   - `DATABASE_PATH` can stay `data/monkey_inc.db`. It's relative to this folder, so the test bot
+     gets its own database.
+4. **Choose the test data**, before the first start:
+   - **Fresh:** do nothing. The database is built from `bot_data/`.
+   - **A copy of production:**
+     `mkdir -p data && cp ../boss-avail-bot/data/backups/<latest>.db data/monkey_inc.db`.
+     Changes in the test server never touch the production database.
+5. **Run it** from the test folder: `.venv/bin/python -m bot`. Production keeps running from its own
+   folder.
+
+Notes:
+- Class icons are per bot, so the test bot uploads its own set from `bot_data/class_icons/` on
+  startup.
+- To use the player commands in the test server, your Discord username must be on the roster, or
+  add yourself there with `/player add`.
+- To test another branch: `git checkout <branch>` in the test folder, then restart the test bot.
+  To remove the test copy: `git worktree remove ../boss-avail-bot-test`.
+- Each folder's `.env` and `data/` are git-ignored, so neither is ever committed.
 
 ## Deploy to EC2
 

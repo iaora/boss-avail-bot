@@ -51,7 +51,7 @@ KEY IDEAS
 - Confirmed: a player counts as confirmed for a week once they press "No change" or save a
   weekly update. Viewing their schedule doesn't count.
 - Advance submissions: players can change their availability for any of the next 8 weeks
-  ("Update a week" in /cq availability). Those changes count as confirmed for that week. They show up in
+  ("Update a future week" in /cq availability). Those changes count as confirmed for that week. They show up in
   /host status and /host availability once that week is "next week" or "this week".
 - Player status:
     active     Normal roster member. Counted in /host status and /host availability.
@@ -69,6 +69,13 @@ KEY IDEAS
     ✅ No change, ✏️ Updated and ⏳ Not confirmed yet. Lists every player who SUBMITTED A
     SCHEDULE CHANGE for the week. Look up someone's changed
     schedule with /host availability player:<name>.
+    The 👤 "See individual availability" button (shown when someone changed their week)
+    opens one private message with a dropdown of everyone who submitted a schedule change,
+    with how many squads they changed. Pick one and that message shows exactly what changed
+    from their default, e.g. "Squad 4 · ...: 🟢 Preferred → 🔴 Not Available", plus any
+    characters they changed for just this week, followed by their full availability for the
+    week (with the 🔀 sort toggle). Pick someone else and the same message updates; no new
+    message each time.
     The 📋 "Open availability" button opens the /host availability view for the same week
     (as a new message, so the status stays above it).
     It also lists CHARACTER STATUS CHANGES from the last 7 days, with before and after:
@@ -121,10 +128,10 @@ KEY IDEAS
                                         Busy squads spread over pages (◀ ▶). In either
                                         grouping, anything too long for one page continues
                                         on the next, marked "(cont.)" in the class view.
-      - Availability here is per character: the player's weekly change (or default), plus
-        any availability the player set for that character ("Character availability" in
-        /cq availability).
-        When both exist, the less available one counts.
+      - Availability here is per character: the player's weekly change (or default), then
+        the character's ongoing exceptions ("Character availability" in /cq characters; when
+        both exist, the less available one counts), then anything set for that character for
+        this week only ("Change a character's week" in /cq availability), which wins.
     With a player: that player's availability for the week (their weekly update, or their
     default if they didn't submit one), their confirmation, and their characters with any
     per-character overrides.
@@ -145,7 +152,7 @@ Only hosts can add or change players and characters. Players can view their char
     Add a new player. Pick their Discord account with member (recommended). If they're
     not in the server yet, give their Discord username instead; they're linked
     automatically the first time they use the bot. Status defaults to Active.
-    Then add their characters. The player sets their usual availability with "Update my default" in
+    Then add their characters. The player sets their usual availability with "Change default availability" in
     /cq availability.
 
 /player edit player:<player> [name:<new name>] [status:<Active | Inactive>]

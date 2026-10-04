@@ -345,7 +345,7 @@ class SquadBreakdownView(discord.ui.View):
         for s in self.squads:
             entries = self.data[s.number][level]
             names = [("" if e.has_static else "⏳ ") + _player_name(e) for e in entries]
-            ts = timeutil.discord_ts(s.starts_at, "f")
+            ts = timeutil.discord_ts(s.starts_at)
             value = ts + "\n" + (_fit(names, per_field - len(ts) - 1) if names else "*No one*")
             embed.add_field(name=f"Squad {s.number} ({len(entries)})", value=value, inline=False)
         embed.set_footer(text="⏳ = only ⏳ Flex characters")

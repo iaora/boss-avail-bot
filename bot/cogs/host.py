@@ -31,8 +31,11 @@ from ..views import (
     confirmation_text,
     damage_history_embed,
     get_squad_order,
+    order_button_label,
     order_squads,
+    other_order,
     send_reminder,
+    set_squad_order,
 )
 from .damage_logs import DEFAULT_CHANNEL_NAME, logs_channel_id
 from .reminder import mark_latest_due_as_sent
@@ -124,6 +127,76 @@ async def job_autocomplete(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=j, value=j) for j in jobs if current.upper() in j][:25]
 
 
+class IndividualAvailabilityView(discord.ui.View):
+    """From /host status: one private message with a dropdown of the players who changed the week.
+    Picking someone (or re-sorting) updates this same message in place."""
+
+    def __init__(self, cog: "HostCog", week: date, players: list[db.Player], user_id: int):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.week = week
+        self.players = {p.id: p for p in players[:25]}  # Discord allows 25 options per dropdown
+        self.user_id = user_id
+        self.order = get_squad_order(cog.bot.conn, user_id)
+        self.selected: int | None = None
+        self._build()
+
+    def _build(self) -> None:
+        self.clear_items()
+        select = discord.ui.Select(
+            placeholder="Choose a player…",
+            options=[
+                discord.SelectOption(
+                    label=p.display[:100],
+                    value=str(p.id),
+                    description=self.cog._changes_summary(p, self.week)[:100],
+                    emoji="✏️",
+                    default=p.id == self.selected,
+                )
+                for p in self.players.values()
+            ],
+            row=0,
+        )
+        select.callback = self._pick
+        self.add_item(select)
+        if self.selected is not None:  # sorting only matters once a player's week is shown
+            sort = discord.ui.Button(
+                label=order_button_label(other_order(self.order)), emoji="🔀",
+                style=discord.ButtonStyle.secondary, row=1,
+            )
+            sort.callback = self._toggle_order
+            self.add_item(sort)
+
+    def embed(self) -> discord.Embed:
+        if self.selected is None:
+            return discord.Embed(
+                title=f"Individual availability: {timeutil.week_label(self.week)}",
+                description=f"{len(self.players)} player(s) submitted a schedule change. Pick one below to see "
+                "what they changed and their full week. Pick another to switch; this message updates.",
+                color=EMBED_COLOR,
+            )
+        return self.cog._changes_embed(self.players[self.selected], self.week, self.order)
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self._build()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _pick(self, interaction: discord.Interaction) -> None:
+        if not self.cog.bot.is_host(interaction):
+            await interaction.response.send_message("Only hosts can use this.", ephemeral=True)
+            return
+        self.selected = int(interaction.data["values"][0])
+        await self._refresh(interaction)
+
+    async def _toggle_order(self, interaction: discord.Interaction) -> None:
+        if not self.cog.bot.is_host(interaction):
+            await interaction.response.send_message("Only hosts can use this.", ephemeral=True)
+            return
+        self.order = other_order(self.order)
+        set_squad_order(self.cog.bot.conn, interaction.user.id, self.order)
+        await self._refresh(interaction)
+
+
 # --------------------------------------------------------------------------- /host
 
 
@@ -138,7 +211,8 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
         active = db.list_players(self.bot.conn, ("active",))
         no_change = sum(1 for p in active if confirmations.get(p.id) == "no_change")
         # Players who submitted a different schedule for this week
-        updated = [p.display for p in active if confirmations.get(p.id) == "updated"]
+        changed_players = [p for p in active if confirmations.get(p.id) == "updated"]
+        updated = [p.display for p in changed_players]
         waiting = len(active) - no_change - len(updated)
 
         embed = discord.Embed(
@@ -169,9 +243,23 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
             embed.add_field(name=name, value=chunk, inline=False)
 
         if updated:
-            embed.set_footer(text="Use /host availability player:<name> to see someone's changed schedule")
+            embed.set_footer(text="Press See individual availability to see what each person changed")
 
         view = discord.ui.View(timeout=900)
+        if changed_players:
+            individual = discord.ui.Button(
+                label="See individual availability", emoji="👤", style=discord.ButtonStyle.secondary
+            )
+
+            async def open_individual(button_interaction: discord.Interaction) -> None:
+                if not self.bot.is_host(button_interaction):
+                    await button_interaction.response.send_message("Only hosts can use this.", ephemeral=True)
+                    return
+                picker = IndividualAvailabilityView(self, wk, changed_players, button_interaction.user.id)
+                await button_interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
+
+            individual.callback = open_individual
+            view.add_item(individual)
         button = discord.ui.Button(label="Open availability", emoji="📋", style=discord.ButtonStyle.primary)
 
         async def open_availability(button_interaction: discord.Interaction) -> None:
@@ -205,6 +293,55 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
                 await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
             return
         await self._all_availability(interaction, wk)
+
+    def _changes(self, player: db.Player, wk: date, order: str = "time") -> list[tuple[db.SquadTime, str | None, str]]:
+        """Squads where the player's availability for the week differs from their default:
+        (squad, default level, level this week)."""
+        conn = self.bot.conn
+        default = db.get_default_availability(conn, player.id)
+        weekly = db.get_weekly_availability(conn, player.id, wk)
+        return [
+            (s, default.get(s.number), weekly[s.number])
+            for s in order_squads(db.squads_for_week(conn, wk, self.bot.tz), order)
+            if s.number in weekly and weekly[s.number] != default.get(s.number)
+        ]
+
+    def _changes_summary(self, player: db.Player, wk: date) -> str:
+        """e.g. '2 squad(s) changed from their default · 1 character changed'."""
+        text = f"{len(self._changes(player, wk))} squad(s) changed from their default"
+        characters = len(db.characters_changed_for_week(self.bot.conn, player.id, wk))
+        return text + (f" · {characters} character(s) changed" if characters else "")
+
+    def _changes_embed(self, player: db.Player, wk: date, order: str = "time") -> discord.Embed:
+        """A player's availability for the week plus exactly what changed from their default."""
+        embed = self._player_embed(player, wk, order)
+        changes = [
+            f"• **Squad {s.number}** · {timeutil.discord_ts(s.starts_at)}: "
+            f"{LEVEL_EMOJI.get(before, '⚪')} {before or 'Not set'} → {LEVEL_EMOJI[after]} {after}"
+            for s, before, after in self._changes(player, wk, order)
+        ]
+        char_changes = db.characters_changed_for_week(self.bot.conn, player.id, wk)
+        if not changes and char_changes:
+            changes = ["*Their own schedule is the same as their default (see their character changes).*"]
+        chunks = _chunks(changes) or ["*Same as their default (they re-saved without changing anything).*"]
+        position = 0
+        for i, chunk in enumerate(chunks[:3]):
+            embed.insert_field_at(
+                position, name="✏️ Changed from default" if i == 0 else "\u200b", value=chunk, inline=False
+            )
+            position += 1
+        if char_changes:
+            lines = [
+                f"• 🧩 **{ign}**: " + ", ".join(f"Squad {n} {LEVEL_EMOJI[lvl]} {lvl}" for n, lvl in sorted(c.items()))
+                for ign, c in char_changes.items()
+            ]
+            for i, chunk in enumerate(_chunks(lines)[:2]):
+                embed.insert_field_at(
+                    position, name="🧩 Characters changed for this week" if i == 0 else "\u200b", value=chunk,
+                    inline=False,
+                )
+                position += 1
+        return embed
 
     def _player_embed(self, player: db.Player, wk: date, order: str = "time") -> discord.Embed:
         conn = self.bot.conn
@@ -249,7 +386,7 @@ class HostCog(HostOnly, commands.GroupCog, group_name="host", group_description=
 
         def overview(order: str) -> discord.Embed:
             lines = [
-                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at, 'f')} · "
+                f"**Squad {s.number}** · {timeutil.discord_ts(s.starts_at)} · "
                 f"🟢 {counts[s.number]['Preferred']}  🟡 {counts[s.number]['Available']}  "
                 f"🔴 {counts[s.number]['Not Available']}"
                 for s in order_squads(squads, order)
