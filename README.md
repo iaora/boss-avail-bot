@@ -208,6 +208,8 @@ bot/
   class_icons.py   class icons (the bot's application emojis), synced from bot_data/class_icons/
   cogs/class_icons.py  background sync of the class icon folder
   cogs/damage_logs.py  watches #queen-logs for damage log uploads
+  findatime.py     /findatime: reading plain-English availability, the hour grid, best times
+  cogs/findatime.py    /findatime poll message and buttons
 deploy/            systemd unit, install script, EC2 user data
 bot_data/          seed data (roster CSV, squad timings, optional class_icons/) -- git-ignored
 tests/

@@ -368,6 +368,51 @@ MIGRATIONS: list[str] = [
         WHEN 'SAIR' THEN 'DPS' WHEN 'SHAD' THEN 'HASTE' WHEN 'TB' THEN 'SI' WHEN 'WA' THEN 'SE'
         ELSE buff END;
     """,
+    # 9: /findatime polls: who joined, and the hours (UTC epoch hours) each person is free
+    """
+    CREATE TABLE findatime_polls (
+        id         INTEGER PRIMARY KEY,
+        channel_id INTEGER,
+        message_id INTEGER,
+        creator_id INTEGER NOT NULL,
+        title      TEXT,
+        starts_on  TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        closed     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE findatime_entries (
+        poll_id    INTEGER NOT NULL REFERENCES findatime_polls (id) ON DELETE CASCADE,
+        user_id    INTEGER NOT NULL,
+        name       TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        hours      TEXT NOT NULL,
+        joined_at  INTEGER NOT NULL,
+        PRIMARY KEY (poll_id, user_id)
+    );
+    """,
+    # 10: /findatime proposals (a time put to the poll's people) and each person's answer
+    """
+    CREATE TABLE findatime_proposals (
+        id          INTEGER PRIMARY KEY,
+        poll_id     INTEGER NOT NULL REFERENCES findatime_polls (id) ON DELETE CASCADE,
+        proposer_id INTEGER NOT NULL,
+        start_hour  INTEGER NOT NULL,
+        end_hour    INTEGER NOT NULL,
+        channel_id  INTEGER,
+        message_id  INTEGER,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE TABLE findatime_responses (
+        proposal_id  INTEGER NOT NULL REFERENCES findatime_proposals (id) ON DELETE CASCADE,
+        user_id      INTEGER NOT NULL,
+        name         TEXT NOT NULL,
+        answer       TEXT NOT NULL CHECK (answer IN ('yes', 'no', 'other')),
+        alt_start    INTEGER,
+        alt_end      INTEGER,
+        responded_at INTEGER NOT NULL,
+        PRIMARY KEY (proposal_id, user_id)
+    );
+    """,
 ]
 
 
@@ -1041,3 +1086,170 @@ def effective_week_availability(
     if weekly:
         return weekly, "weekly"
     return get_default_availability(conn, player_id, boss_id=boss_id), "default"
+
+
+# --------------------------------------------------------------------------- /findatime polls
+
+
+@dataclass
+class FindATimePoll:
+    id: int
+    channel_id: int | None
+    message_id: int | None
+    creator_id: int
+    title: str | None
+    starts_on: date
+    closed: bool
+    created_at: int  # unix seconds; the poll covers the 7 days from then
+
+    @property
+    def start_hour(self) -> int:
+        return self.created_at // 3600
+
+    @property
+    def end_hour(self) -> int:
+        return self.start_hour + 7 * 24
+
+
+@dataclass
+class FindATimeEntry:
+    user_id: int
+    name: str
+    text: str  # what they typed
+    hours: set[int]  # UTC epoch hours they're free
+
+
+def _poll(row) -> FindATimePoll | None:
+    if row is None:
+        return None
+    return FindATimePoll(
+        id=row["id"], channel_id=row["channel_id"], message_id=row["message_id"], creator_id=row["creator_id"],
+        title=row["title"], starts_on=date.fromisoformat(row["starts_on"]), closed=bool(row["closed"]),
+        created_at=row["created_at"],
+    )
+
+
+def create_poll(
+    conn: sqlite3.Connection, creator_id: int, title: str | None, starts_on: date, created_at: int
+) -> FindATimePoll:
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO findatime_polls (creator_id, title, starts_on, created_at) VALUES (?, ?, ?, ?)",
+            (creator_id, title, starts_on.isoformat(), created_at),
+        )
+    return get_poll(conn, cur.lastrowid)
+
+
+def get_poll(conn: sqlite3.Connection, poll_id: int) -> FindATimePoll | None:
+    return _poll(conn.execute("SELECT * FROM findatime_polls WHERE id = ?", (poll_id,)).fetchone())
+
+
+def set_poll_message(conn: sqlite3.Connection, poll_id: int, channel_id: int, message_id: int) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE findatime_polls SET channel_id = ?, message_id = ? WHERE id = ?", (channel_id, message_id, poll_id)
+        )
+
+
+def close_poll(conn: sqlite3.Connection, poll_id: int) -> None:
+    with conn:
+        conn.execute("UPDATE findatime_polls SET closed = 1 WHERE id = ?", (poll_id,))
+
+
+def set_poll_entry(conn: sqlite3.Connection, poll_id: int, user_id: int, name: str, text: str, hours: set[int]) -> None:
+    """Join a poll, or replace your availability if you'd joined already (keeping your place in the list)."""
+    with conn:
+        conn.execute(
+            "INSERT INTO findatime_entries (poll_id, user_id, name, text, hours, joined_at) "
+            "VALUES (?, ?, ?, ?, ?, strftime('%s')) "
+            "ON CONFLICT (poll_id, user_id) DO UPDATE SET name = excluded.name, text = excluded.text, "
+            "hours = excluded.hours",
+            (poll_id, user_id, name, text, ",".join(map(str, sorted(hours)))),
+        )
+
+
+def delete_poll_entry(conn: sqlite3.Connection, poll_id: int, user_id: int) -> bool:
+    with conn:
+        cur = conn.execute("DELETE FROM findatime_entries WHERE poll_id = ? AND user_id = ?", (poll_id, user_id))
+    return cur.rowcount > 0
+
+
+def poll_entries(conn: sqlite3.Connection, poll_id: int) -> list[FindATimeEntry]:
+    """Everyone who joined, in the order they joined."""
+    rows = conn.execute(
+        "SELECT * FROM findatime_entries WHERE poll_id = ? ORDER BY joined_at, rowid", (poll_id,)
+    ).fetchall()
+    return [
+        FindATimeEntry(r["user_id"], r["name"], r["text"], {int(h) for h in r["hours"].split(",") if h})
+        for r in rows
+    ]
+
+
+@dataclass
+class FindATimeProposal:
+    id: int
+    poll_id: int
+    proposer_id: int
+    start_hour: int  # epoch hours
+    end_hour: int
+    channel_id: int | None
+    message_id: int | None
+
+
+@dataclass
+class FindATimeResponse:
+    user_id: int
+    name: str
+    answer: str  # "yes", "no" or "other" (a different time: alt_start..alt_end, epoch hours)
+    alt_start: int | None
+    alt_end: int | None
+
+
+def create_proposal(conn: sqlite3.Connection, poll_id: int, proposer_id: int, start_hour: int, end_hour: int) -> FindATimeProposal:
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO findatime_proposals (poll_id, proposer_id, start_hour, end_hour, created_at) "
+            "VALUES (?, ?, ?, ?, strftime('%s'))",
+            (poll_id, proposer_id, start_hour, end_hour),
+        )
+    return get_proposal(conn, cur.lastrowid)
+
+
+def get_proposal(conn: sqlite3.Connection, proposal_id: int) -> FindATimeProposal | None:
+    row = conn.execute("SELECT * FROM findatime_proposals WHERE id = ?", (proposal_id,)).fetchone()
+    if row is None:
+        return None
+    return FindATimeProposal(
+        row["id"], row["poll_id"], row["proposer_id"], row["start_hour"], row["end_hour"], row["channel_id"],
+        row["message_id"],
+    )
+
+
+def set_proposal_message(conn: sqlite3.Connection, proposal_id: int, channel_id: int, message_id: int) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE findatime_proposals SET channel_id = ?, message_id = ? WHERE id = ?",
+            (channel_id, message_id, proposal_id),
+        )
+
+
+def set_proposal_response(
+    conn: sqlite3.Connection, proposal_id: int, user_id: int, name: str, answer: str,
+    alt: tuple[int, int] | None = None,
+) -> None:
+    """Record (or change) someone's answer to a proposal."""
+    with conn:
+        conn.execute(
+            "INSERT INTO findatime_responses (proposal_id, user_id, name, answer, alt_start, alt_end, responded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, strftime('%s')) "
+            "ON CONFLICT (proposal_id, user_id) DO UPDATE SET name = excluded.name, answer = excluded.answer, "
+            "alt_start = excluded.alt_start, alt_end = excluded.alt_end, responded_at = excluded.responded_at",
+            (proposal_id, user_id, name, answer, *(alt or (None, None))),
+        )
+
+
+def proposal_responses(conn: sqlite3.Connection, proposal_id: int) -> list[FindATimeResponse]:
+    rows = conn.execute(
+        "SELECT * FROM findatime_responses WHERE proposal_id = ? ORDER BY responded_at, rowid", (proposal_id,)
+    ).fetchall()
+    return [FindATimeResponse(r["user_id"], r["name"], r["answer"], r["alt_start"], r["alt_end"]) for r in rows]

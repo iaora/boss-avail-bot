@@ -20,7 +20,10 @@ INVITE_PERMISSIONS = discord.Permissions(
     attach_files=True, read_message_history=True, add_reactions=True,
 ).value
 
-COGS = ("bot.cogs.player", "bot.cogs.host", "bot.cogs.reminder", "bot.cogs.damage_logs", "bot.cogs.class_icons")
+COGS = (
+    "bot.cogs.player", "bot.cogs.host", "bot.cogs.reminder", "bot.cogs.damage_logs", "bot.cogs.class_icons",
+    "bot.cogs.findatime",
+)
 
 
 class MonkeyBot(commands.Bot):

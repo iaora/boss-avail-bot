@@ -992,7 +992,7 @@ class SettingsView(discord.ui.View):
         embed = discord.Embed(title="Your settings", color=EMBED_COLOR)
         embed.add_field(
             name="🌐 Timezone",
-            value=f"{timezone_value}\nUsed for the run times in the availability pop-ups.",
+            value=f"{timezone_value}\nUsed for the run times in the availability pop-ups and in /findatime.",
             inline=False,
         )
         embed.add_field(
