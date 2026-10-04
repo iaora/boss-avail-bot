@@ -4,6 +4,7 @@
 #
 #   ./deploy/install.sh            # install + start
 #   SERVICE_USER=ec2-user ./deploy/install.sh
+#   BACKUP_S3_URI=s3://bucket/backups/ ./deploy/install.sh   # also copy nightly backups to S3
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,8 +44,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME" >/dev/null
 sudo systemctl restart "$SERVICE_NAME"
 
-# Nightly database backup at 04:00 server time (keeps the newest 14).
+# Nightly database backup at 04:00 server time (keeps the newest 14). With BACKUP_S3_URI set
+# (production, see deploy/deploy.sh), the backups are also copied to S3.
 CRON_LINE="0 4 * * * cd $PROJECT_DIR && .venv/bin/python -m bot.backup >> data/backup.log 2>&1"
+if [[ -n "${BACKUP_S3_URI:-}" ]]; then
+  CRON_LINE="$CRON_LINE && aws s3 sync data/backups $BACKUP_S3_URI >> data/backup.log 2>&1"
+fi
 ( sudo crontab -u "$SERVICE_USER" -l 2>/dev/null | grep -v 'bot.backup' || true; echo "$CRON_LINE" ) \
   | sudo crontab -u "$SERVICE_USER" - || echo "(cron not available; skipping nightly backups)"
 

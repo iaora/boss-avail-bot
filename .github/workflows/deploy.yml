@@ -1,0 +1,81 @@
+name: Test and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # same as production (Amazon Linux 2023 python3.11)
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest
+
+  deploy:
+    needs: test
+    # Only main deploys, and only once the AWS role is configured (see README, "Deploy to EC2").
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write   # GitHub OIDC login to AWS; no AWS keys are stored in GitHub
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Find the production instance
+        run: |
+          id=$(aws ec2 describe-instances \
+            --filters Name=tag:Name,Values=monkey-inc-prod Name=instance-state-name,Values=running \
+            --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [[ -z "$id" || "$id" == *[[:space:]]* ]]; then
+            echo "Expected exactly one running monkey-inc-prod instance, found: '$id'" >&2
+            exit 1
+          fi
+          echo "INSTANCE_ID=$id" >> "$GITHUB_ENV"
+
+      - name: Deploy ${{ github.sha }}
+        run: |
+          script="cd /opt/monkey-inc && sudo -u ec2-user git fetch --quiet origin main && sudo -u ec2-user git reset --hard ${GITHUB_SHA} && bash deploy/deploy.sh"
+          cmd=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${GITHUB_SHA::7}" \
+            --timeout-seconds 600 \
+            --parameters "$(jq -n --arg s "$script" '{commands: [$s], executionTimeout: ["600"]}')" \
+            --query Command.CommandId --output text)
+          echo "SSM command $cmd"
+
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 5
+            status=$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Pending|InProgress|Delayed) continue ;; *) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          echo "--- stderr ---"
+          aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text
+          echo "Status: $status"
+          [[ "$status" == "Success" ]]

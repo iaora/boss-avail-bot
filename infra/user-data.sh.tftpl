@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# First-boot bootstrap for the production instance (rendered by Terraform; runs once, as root).
+# Later code updates come from GitHub Actions running deploy/deploy.sh over SSM.
+set -euxo pipefail
+
+APP_DIR=/opt/monkey-inc
+APP_USER=ec2-user
+
+dnf install -y git python3.11 cronie
+systemctl enable --now crond
+
+cat > /etc/monkey-inc.env <<EOF
+BUCKET=${bucket}
+AWS_REGION=${region}
+ENV_PARAMETER=${env_param}
+EOF
+
+if [[ ! -d "$APP_DIR/.git" ]]; then
+  git clone --branch "${branch}" "${repo_url}" "$APP_DIR"
+fi
+
+# The instance role's credentials can take a moment to show up right after launch.
+for _ in $(seq 1 30); do
+  aws sts get-caller-identity --region "${region}" >/dev/null 2>&1 && break
+  sleep 10
+done
+
+# Seed data and class icons are not in the public repo; they live in the private bucket.
+aws s3 sync "s3://${bucket}/bot_data/" "$APP_DIR/bot_data/" --region "${region}"
+
+# One-time migration: restore the database uploaded from the old (local) host.
+mkdir -p "$APP_DIR/data"
+if [[ ! -f "$APP_DIR/data/monkey_inc.db" ]] &&
+   aws s3 ls "s3://${bucket}/migration/monkey_inc.db" --region "${region}" >/dev/null 2>&1; then
+  aws s3 cp "s3://${bucket}/migration/monkey_inc.db" "$APP_DIR/data/monkey_inc.db" --region "${region}"
+fi
+
+chown -R "$APP_USER" "$APP_DIR"
+bash "$APP_DIR/deploy/deploy.sh"

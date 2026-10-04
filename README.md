@@ -55,84 +55,158 @@ Run the tests with `.venv/bin/python -m pytest`.
    host_guide.txt, "Who can see the host commands"). Optionally copy the CQ
    channel ID too (`CQ_CHANNEL_ID`), or set it later with `/config reminders`.
 
-## Development vs production bots
+## Development vs production
 
-Use a **separate test bot and test server** for trying out changes, so the bot in the official
-server (production) is never affected.
+| | Production | Development |
+|---|---|---|
+| Runs on | EC2, built by Terraform ([infra/](infra/)) | your computer, `python -m bot` |
+| Discord bot | Monkey Inc, in the official server | a separate test bot, in a test server |
+| Config | SSM parameter `/monkey-inc/env` | your local `.env` |
+| Database | `/opt/monkey-inc/data/monkey_inc.db` on the instance | `data/monkey_inc.db` in this folder |
+| Updated by | merging into `main` (GitHub Actions deploys) | `git checkout` + restart |
 
-Don't run the production bot's token in two places. If two programs log in with the same token,
-both answer every button press, and players get "interaction failed" or duplicate replies. The two
-servers would also share one database, so test clicks would change real players' data.
+Never run the production bot's token in two places. If two programs log in with the same token,
+both answer every button press, and players get "interaction failed" or duplicate replies. Your
+local `.env` must always hold the **test** bot's token.
+
+**One-time dev setup:**
 
 1. **Create a second Discord application** (e.g. "Monkey Inc Test") in the Developer Portal and
-   follow the one-time setup above:
-   - reset and copy its token,
-   - turn on Message Content Intent,
-   - invite it to your **test server** with the same scopes and permissions.
-2. **Make a second working copy** of the repo with a git worktree (a second folder on the same
-   repository, checked out at whichever branch you want to test):
-   ```bash
-   cd ~/Projects/boss-avail-bot
-   git worktree add ../boss-avail-bot-test <branch-to-test>
-   cd ../boss-avail-bot-test
-   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-   ln -s ../boss-avail-bot/bot_data bot_data   # reuse the roster CSV, squad timings and class icons
-   cp ../boss-avail-bot/.env .env
-   ```
-3. **Point the test copy's `.env` at the test server:**
+   follow the one-time setup above: reset and copy its token, turn on Message Content Intent, and
+   invite it to your **test server** with the same scopes and permissions.
+2. **Point your local `.env` at the test server:**
    - `DISCORD_TOKEN` is the **test bot's** token.
    - `GUILD_ID`, `HOST_ROLE_ID`, `PLAYER_ROLE_ID`, `CQ_CHANNEL_ID` and `QUEEN_LOGS_CHANNEL_ID` are
      the test server's IDs. Every server has its own.
-   - `DATABASE_PATH` can stay `data/monkey_inc.db`. It's relative to this folder, so the test bot
-     gets its own database.
-4. **Choose the test data**, before the first start:
-   - **Fresh:** do nothing. The database is built from `bot_data/`.
-   - **A copy of production:**
-     `mkdir -p data && cp ../boss-avail-bot/data/backups/<latest>.db data/monkey_inc.db`.
-     Changes in the test server never touch the production database.
-5. **Run it** from the test folder: `.venv/bin/python -m bot`. Production keeps running from its own
-   folder.
+3. **Choose the test data**, before the next start:
+   - **Fresh:** `rm -rf data/`. The database is rebuilt from `bot_data/`.
+   - **A copy of production:** download a nightly backup:
+     `aws s3 cp s3://<bucket>/backups/<file>.db data/monkey_inc.db` (stop the dev bot first).
+   Nothing you do in dev ever touches the production database.
+4. **Run it:** `.venv/bin/python -m bot`.
 
 Notes:
 - Class icons are per bot, so the test bot uploads its own set from `bot_data/class_icons/` on
   startup.
 - To use the player commands in the test server, your Discord username must be on the roster, or
   add yourself there with `/player add`.
-- To test another branch: `git checkout <branch>` in the test folder, then restart the test bot.
-  To remove the test copy: `git worktree remove ../boss-avail-bot-test`.
-- Each folder's `.env` and `data/` are git-ignored, so neither is ever committed.
+- To try a branch: `git checkout <branch>`, then restart the dev bot.
 
-## Deploy to EC2
+## Deploy to EC2 (production)
 
-The app is self-contained: the code, a `.env` file, and a `data/` folder holding the SQLite
-database.
+Production is one small EC2 instance (Amazon Linux 2023, t4g.micro, us-east-1) described in
+[infra/](infra/). It has no open ports; you get a shell with SSM Session Manager. Pieces:
 
-**Automatic (new instance):** launch Amazon Linux 2023 with
-[deploy/ec2-user-data.sh](deploy/ec2-user-data.sh) as the User data. Edit `REPO_URL` first,
-and store your `.env` contents in SSM Parameter Store as the SecureString
-`/monkey-inc/env`. The instance clones the repo, writes `.env`, and installs and starts the
-service. To seed the database, upload `bot_data/` to a **private** S3 folder and set
-`SEED_S3_URI` in the script. Or copy your existing database instead (see below).
+- **The instance** runs the `monkey-inc` systemd service from `/opt/monkey-inc` (a clone of
+  `main`), restarting on crash and starting on boot. The SQLite database is
+  `/opt/monkey-inc/data/monkey_inc.db`.
+- **Config** is the production `.env`, stored in SSM Parameter Store as the SecureString
+  `/monkey-inc/env`. It is never in Terraform or GitHub.
+- **A private S3 bucket** (`monkey-inc-<account id>`) holds `bot_data/` (roster, squad timings,
+  class icons), `migration/` (the one-time database upload), and `backups/` (nightly copies).
+- **GitHub Actions** ([.github/workflows/deploy.yml](.github/workflows/deploy.yml)) runs the tests
+  on every PR and every push to `main`. After a push to `main` passes, it logs in to AWS with
+  GitHub OIDC (no AWS keys are stored in GitHub) and tells the instance, through SSM, to check out
+  that commit and run [deploy/deploy.sh](deploy/deploy.sh). That script refreshes `.env` from SSM,
+  backs up the database, runs `deploy/install.sh` (pip install and restart), and fails the run
+  if the bot doesn't stay up.
 
-**Manual (existing instance):**
+### Tools (one time)
 
 ```bash
-git clone <repo> ~/boss-avail-bot && cd ~/boss-avail-bot
-cp .env.example .env && nano .env
-# optional seed data, from your machine:
-#   scp -r bot_data ec2-user@<host>:~/boss-avail-bot/
-./deploy/install.sh
+brew install hashicorp/tap/terraform awscli
+aws configure          # an IAM user (or SSO profile) with admin rights, region us-east-1
+gh auth login
 ```
 
-`install.sh` is safe to re-run after a `git pull`. It:
-- creates the venv and installs the requirements,
-- installs the `monkey-inc` systemd service, which restarts on crash and starts on boot,
-- sets up a nightly database backup to `data/backups/`.
+For SSM shell access, also install the Session Manager plugin:
+`brew install --cask session-manager-plugin`.
 
-Logs: `sudo journalctl -u monkey-inc -f`.
+### First setup and moving the data from your computer
 
-**Moving an existing database:** stop the bot, copy `data/monkey_inc.db` to the same path
-on the new machine, then start the service. Schema upgrades run automatically at startup.
+The production bot moves from your computer to EC2. Run these in order:
+
+1. **Create the bucket and IAM roles, without the instance yet:**
+   ```bash
+   cd infra
+   terraform init
+   terraform apply -var instance_enabled=false
+   terraform output        # note bucket and deploy_role_arn
+   cd ..
+   ```
+   This also creates the AWS-side GitHub OIDC provider. If your account already has one for
+   `token.actions.githubusercontent.com`, import it first:
+   `terraform import aws_iam_openid_connect_provider.github arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`.
+2. **Upload the seed data and class icons** (the bucket is private):
+   `aws s3 sync bot_data/ s3://<bucket>/bot_data/`
+3. **Store the production `.env` in SSM** (your current `.env`, which holds the production token):
+   `aws ssm put-parameter --name /monkey-inc/env --type SecureString --value file://.env`
+4. **Merge the PR that adds `infra/` and `deploy/deploy.sh` into `main`.** The instance clones
+   `main`. The deploy job is skipped because `AWS_DEPLOY_ROLE_ARN` isn't set yet. Also make sure
+   `main` has every database migration your local database has.
+5. **Stop the local bot** (Ctrl+C), then upload a consistent copy of its database:
+   ```bash
+   .venv/bin/python -m bot.backup          # prints data/backups/monkey_inc-<time>.db
+   aws s3 cp data/backups/monkey_inc-<time>.db s3://<bucket>/migration/monkey_inc.db
+   ```
+   From here until step 6 finishes, the bot is offline.
+6. **Create the instance:** `cd infra && terraform apply`. On first boot it installs Python,
+   clones the repo, downloads `bot_data/`, restores `migration/monkey_inc.db`, and starts the
+   bot (about 3 to 5 minutes). Check it (see "Logs and shell" below).
+7. **Turn on automatic deploys:**
+   `gh variable set AWS_DEPLOY_ROLE_ARN --body "$(terraform -chdir=infra output -raw deploy_role_arn)"`
+   Then re-run the latest workflow on `main` (Actions tab > Test and deploy > Run workflow) to
+   check that deploys work.
+8. **Switch your computer to dev:** put the test bot's token and test server IDs in your local
+   `.env` (see "Development vs production").
+
+### Day to day
+
+- **Ship a change:** merge a PR into `main`. Actions runs the tests, then deploys. Watch it in the
+  Actions tab. A failed test or a bot that doesn't start fails the run.
+- **Change production settings** (`.env` values):
+  `aws ssm put-parameter --name /monkey-inc/env --type SecureString --overwrite --value file://prod.env`,
+  then re-run the workflow on `main` (or run `sudo bash /opt/monkey-inc/deploy/deploy.sh` on the
+  instance). Keep `prod.env` outside the repo, or delete it afterwards.
+- **Update roster seed files or class icons:** `aws s3 sync bot_data/ s3://<bucket>/bot_data/`,
+  then on the instance: `sudo -u ec2-user aws s3 sync s3://<bucket>/bot_data/ /opt/monkey-inc/bot_data/`.
+  The icon sync picks up changes within 10 minutes.
+
+### Logs and shell
+
+```bash
+aws ssm start-session --target "$(terraform -chdir=infra output -raw instance_id)"
+sudo journalctl -u monkey-inc -f        # live logs
+sudo systemctl status monkey-inc
+```
+
+### Backups and restore
+
+Every night at 04:00 (UTC on the instance) the bot copies the database to
+`/opt/monkey-inc/data/backups/` (newest 14 kept) and syncs that folder to `s3://<bucket>/backups/`.
+Every deploy also takes a backup first.
+
+To restore, on the instance:
+
+```bash
+sudo systemctl stop monkey-inc
+cd /opt/monkey-inc
+sudo -u ec2-user cp data/backups/<file>.db data/monkey_inc.db   # or: aws s3 cp s3://<bucket>/backups/<file>.db ...
+sudo rm -f data/monkey_inc.db-wal data/monkey_inc.db-shm
+sudo systemctl start monkey-inc
+```
+
+To rebuild the instance from scratch: upload the backup to `s3://<bucket>/migration/monkey_inc.db`,
+then `terraform apply -replace='aws_instance.bot[0]'`. The new instance restores it on first boot.
+
+`terraform apply` never replaces the instance on its own when a newer AMI comes out or the
+bootstrap script changes. Patch it in place with `sudo dnf upgrade -y` over SSM.
+
+### Without Terraform
+
+`deploy/install.sh` still works on any Linux box with systemd: clone the repo, create `.env`,
+optionally copy `bot_data/`, and run `./deploy/install.sh`. It is safe to re-run after a
+`git pull`.
 
 ## Taking the bot down
 
@@ -150,21 +224,20 @@ copy to `data/backups/`. Copy that file somewhere safe **outside** the project f
 
 ### EC2
 
+To pause the bot without removing anything: `sudo systemctl stop monkey-inc` on the instance,
+and later `sudo systemctl start monkey-inc`.
+
+To remove production entirely, first copy the latest backup somewhere safe
+(`aws s3 sync s3://<bucket>/backups/ ~/monkey-inc-backups/`), then:
+
 ```bash
-sudo systemctl stop monkey-inc                          # stop the bot
-sudo systemctl disable monkey-inc                       # don't start on boot
-sudo rm /etc/systemd/system/monkey-inc.service && sudo systemctl daemon-reload
-crontab -l | grep -v 'bot.backup' | crontab -           # remove the nightly backup job
-rm -rf ~/boss-avail-bot/data                            # delete the database + backups
-rm -rf ~/boss-avail-bot                                 # delete everything (code, .venv, .env)
+gh variable delete AWS_DEPLOY_ROLE_ARN                 # stop deploys
+aws s3 rm --recursive s3://<bucket>                    # Terraform won't delete a non-empty bucket
+aws s3api delete-objects --bucket <bucket> --delete "$(aws s3api list-object-versions --bucket <bucket> \
+  --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json)"   # old versions too
+cd infra && terraform destroy
+aws ssm delete-parameter --name /monkey-inc/env
 ```
-
-(If you used `ec2-user-data.sh`, the app lives in `/opt/monkey-inc` instead of `~/boss-avail-bot`.)
-To pause the bot without removing anything, use `sudo systemctl stop monkey-inc` and later
-`sudo systemctl start monkey-inc`.
-
-To remove the AWS resources as well: terminate the instance in the EC2 console, then delete
-the `/monkey-inc/env` parameter in SSM Parameter Store and any seed files in S3.
 
 ### Discord
 
@@ -196,7 +269,9 @@ bot/
   class_icons.py   class icons (the bot's application emojis), synced from bot_data/class_icons/
   cogs/class_icons.py  background sync of the class icon folder
   cogs/damage_logs.py  watches #queen-logs for damage log uploads
-deploy/            systemd unit, install script, EC2 user data
+deploy/            systemd unit, install script, production deploy script (deploy.sh)
+infra/            Terraform for production (EC2, S3, IAM, GitHub OIDC) and the first-boot script
+.github/workflows/  tests on every PR; deploy to EC2 on every push to main
 bot_data/          seed data (roster CSV, squad timings, optional class_icons/) -- git-ignored
 tests/
 ```

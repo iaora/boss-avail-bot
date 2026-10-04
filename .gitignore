@@ -442,3 +442,9 @@ data/
 .DS_Store
 # Roster data contains players' Discord handles/IDs -- never publish it
 bot_data/
+# Terraform: state can hold resource details; keep it local. The lock file IS committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
