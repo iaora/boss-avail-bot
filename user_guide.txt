@@ -92,8 +92,8 @@ Save. It stays open for 15 minutes.
 
 4. COMMANDS
 -----------
-There are three commands: /cq availability, /cq characters and /settings. Everything else is
-a button on them.
+There are four commands: /cq availability, /cq characters, /settings and /findatime.
+Everything else is a button on them.
 
   /cq availability          Show your availability for next week (same view as the reminder's
                             "View my availability"), grouped by 🟢 / 🟡 / 🔴, with whether
@@ -135,9 +135,13 @@ a button on them.
 
   /settings                 Your bot settings, visible only to you:
                               🌐 Timezone     used for the run times in the availability
-                                              pop-up's checkboxes
+                                              pop-up's checkboxes and in /findatime
                               🔀 Squad order  list squads by time or by squad number
                                               everywhere (the same as the 🔀 buttons)
+
+  /findatime [title]        Start a poll to find a time when several people are free, for any
+                            boss (see "Finding a time" below). The poll is posted in the
+                            channel for everyone.
 
 Character status
   Each character is one of:
@@ -161,6 +165,46 @@ Squad order
 
 Joining the roster, and adding, changing or removing characters, is done by the hosts.
 Ask a host if you're new, have a new character, or something on /cq characters is wrong.
+
+
+Finding a time (/findatime)
+  Anyone can start a poll, e.g. /findatime title:Lotus hard. It covers the 7 days from when it
+  was started and lists everyone who has joined. The poll's buttons work for everyone:
+    ✋ Join/Edit     Type when you're free, in plain English and in your own time, e.g.
+                    "Fri 5-7pm, Sat after 2pm", "weekdays 8-11pm", "Sun all day",
+                    "Mon-Wed 9pm-1am", "tomorrow evening" or "10/12 6-9pm". Separate parts with
+                    commas. A part with only a time uses the day before it ("Fri 1-3pm,
+                    6-9pm"); a day with no time means all day. Times without am/pm are read as
+                    PM (you're told). A day name means the next one that's still ahead for
+                    you: if it's Friday evening and you type "Fri 3-6pm", that's next Friday.
+                    Hours that have already passed, or come after the poll ends, are left out
+                    (you're told).
+                    The bot shows your free hours for each day. In 🖥️ Grid view it's one
+                    square per hour (🟩 free, ⬛ not, ⬜ already passed),
+                    in four labelled groups: 12-6AM, 6-12PM, 12-6PM, 6-12AM. It also lists
+                    anything it couldn't read. Press ✅ Confirm to save it, or ✏️ Edit to fix it.
+                    Already joined? Join/Edit shows your hours (only to you) with ✏️ Edit and
+                    ➖ Leave poll.
+    🗓️ See schedule  Everyone's hours for one day at a time (pick the day, or ◀ ▶), in your
+                    timezone. Hours that have passed are left out (⬜ in Grid view). Only you
+                    see it.
+    ⭐ Best time     The times still ahead when the most people are free together, longest and
+                    soonest first, with who's missing. If no time works for 2+ people, it says
+                    so (and mentions any overlap that has already passed). Only you see it.
+  The poll's creator (and hosts) also get controls under Best time, only they see them:
+    📣 Propose a time: a pop-up lists the best times again (in your time), then you type when the
+       run should start, e.g. "tue 1pm" (or a range, "tue 1-3pm"). The bot shows how it read it;
+       press 📣 Send, or ✏️ Edit to fix it. Send posts the proposal in the channel and pings
+       everyone who joined. Each person answers with ✅ Confirm,
+       ❌ Can't make it, or 🔁 Propose different time (typed like Join); the proposal message
+       shows everyone's answers and who hasn't answered yet. Only people in the poll can
+       answer, and you can change your answer.
+    🔒 Close poll: no new joins. See schedule and Best time still work.
+  Hours are shown in words at first (e.g. "Robin · 5 PM-7 PM"), with a 🤝 line in See schedule for
+  when 2+ people are free; this reads best on phones. Press 🖥️ Grid view (on See schedule, the Join
+  preview or your hours) for the squares instead; 📱 Compact view switches back. Each new message
+  starts in words.
+  Your timezone comes from /settings; the first Join asks for it if it isn't set.
 
 
 5. FIRST TIME USING THE BOT?

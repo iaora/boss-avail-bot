@@ -35,8 +35,8 @@ def test_players_have_no_roster_editing_commands(tmp_path):
 
     top_level, groups = asyncio.run(load_and_list())
     # hosts have panels of buttons (/cq_host, /cq_config, /character, /player); players have
-    # /cq availability, /cq characters and /settings
-    assert top_level == {"cq_host", "cq_config", "player", "character", "cq", "settings"}
+    # /cq availability, /cq characters and /settings; anyone can start a /findatime poll
+    assert top_level == {"cq_host", "cq_config", "player", "character", "cq", "settings", "findatime"}
     assert groups["cq"] == {"availability", "characters"}  # everything else is buttons
 
 
